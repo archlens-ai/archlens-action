@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      # mmdc (mermaid-cli) needs its own headless Chromium before any test
+      # or script that renders a diagram runs — installed into puppeteer's
+      # default cache path so no ARCHLENS_TEST_CHROMIUM_PATH override is
+      # needed here (that env var exists only for sandboxes with a
+      # non-standard Chromium location, e.g. a Playwright-only install).
+      - name: Install headless Chromium for mmdc
+        run: npx --yes puppeteer browsers install chrome
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Unit + integration tests
+        run: npm test
+
+      - name: Build the Action bundle
+        run: npm run build --workspace=action
+
+      - name: Full pipeline dry run (Action -> backend -> mmdc -> comment)
+        run: npx tsx scripts/dry-run.ts
+
+      - name: Fail if the Action's committed dist/ is stale
+        run: |
+          git diff --exit-code -- action/dist || \
+            (echo "::error::action/dist/index.js is out of date — run 'npm run build --workspace=action' and commit the result." && exit 1)

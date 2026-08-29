@@ -1,0 +1,47 @@
+name: "ArchLens AI"
+description: "Posts an AI-generated architecture diagram of this PR's structural changes as a PR comment."
+author: "ArchLens"
+branding:
+  icon: "share-2"
+  color: "purple"
+
+inputs:
+  github-token:
+    description: "Token used to read PR diffs and post comments. Defaults to the workflow's GITHUB_TOKEN."
+    required: false
+    default: ${{ github.token }}
+  archlens-api-key:
+    description: "Your ArchLens license/API key (get one at https://archlens.dev). Required for private repos; public repos may use the shared free-tier key."
+    required: false
+  api-base-url:
+    description: "Override the ArchLens API base URL (for self-hosted/enterprise deployments)."
+    required: false
+    default: "https://api.archlens.dev"
+  include-patterns:
+    description: "Comma-separated glob patterns that trigger diagram generation when matched by a changed file."
+    required: false
+    default: "**/*.sql,**/*.prisma,**/*.graphql,**/schema.json,**/routes/**,**/controllers/**,**/migrations/**"
+  max-diff-bytes:
+    description: "Hard cap on compressed diff size sent to the API. Oversized diffs are truncated with a note in the comment."
+    required: false
+    default: "60000"
+  diagram-type:
+    description: "flowchart | sequence | auto (let the model choose based on the diff shape)."
+    required: false
+    default: "auto"
+  fail-on-error:
+    description: "If true, the Action fails the workflow step on generation errors instead of only posting a warning comment."
+    required: false
+    default: "false"
+
+outputs:
+  diagram-url:
+    description: "Hosted SVG URL of the generated diagram, if one was generated."
+  comment-url:
+    description: "URL of the PR comment ArchLens posted or updated."
+  skipped:
+    description: "'true' if no matching files changed and generation was skipped."
+
+runs:
+  using: "node20"
+  main: "dist/index.js"

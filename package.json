@@ -1,0 +1,23 @@
+{
+  "name": "archlens",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ArchLens AI — turns PR diffs into visual architecture diagrams posted as GitHub PR comments.",
+  "workspaces": [
+    "action",
+    "backend"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "dry-run": "tsx scripts/dry-run.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

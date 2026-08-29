@@ -1,0 +1,22 @@
+{
+  "name": "@archlens/backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ArchLens backend — Vercel serverless functions: diagram generation proxy, quota/license gate, Stripe billing.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "stripe": "^16.9.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.2.11",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
