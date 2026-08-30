@@ -16,7 +16,7 @@ flowchart TD
   Action -- "2. POST /v1/generate (Bearer API key)" --> API["ArchLens API\n(Vercel serverless)"]
   API -- "3. check API key + quota" --> DB[("Supabase\napi_keys / usage_logs")]
   API -- "4. content-hash cache lookup" --> Cache[("Supabase\ndiagram_cache")]
-  Cache -- "cache miss" --> LLM["LLM provider\n(OpenAI gpt-4o-mini, default)"]
+  Cache -- "cache miss" --> LLM["LLM provider\n(Anthropic claude-haiku-4-5, default)"]
   LLM -- "raw Mermaid syntax" --> Validate["Syntax + safety validation"]
   Validate -- "valid" --> Render["Render worker\n(mmdc / headless Chromium)"]
   Render -- "SVG bytes" --> Storage[("Supabase Storage\npublic bucket")]
@@ -46,11 +46,17 @@ reconsidered:
   same hash — so it's served from cache, burns zero quota, and costs zero
   LLM tokens. This is the single biggest lever on unit economics for a
   product whose primary cost driver is inference calls.
-- **OpenAI is the default provider, not DeepSeek.** DeepSeek is supported
-  (its API is wire-compatible with OpenAI's) but is opt-in only via
-  `ARCHLENS_LLM_PROVIDER=deepseek`. Sending a paying customer's private-repo
-  diff to a Chinese-domiciled model provider by default is a data-residency
-  and trust risk most SMB/enterprise buyers in ArchLens's target market
+- **Anthropic (`claude-haiku-4-5`) is the default provider.** This
+  deployment reuses an existing Anthropic account rather than provisioning
+  a fresh OpenAI key — but under its **own Anthropic Console project**, so
+  ArchLens's token spend and usage are separately visible from whatever
+  else runs on that account, exactly the same "same account, different
+  project" pattern used for Supabase below. `backend/lib/llm.ts` also
+  supports OpenAI and DeepSeek, opt-in via `ARCHLENS_LLM_PROVIDER`, for
+  deployments without that constraint. DeepSeek in particular stays opt-in
+  only — sending a paying customer's private-repo diff to a
+  Chinese-domiciled model provider by default is a data-residency and
+  trust risk most SMB/enterprise buyers in ArchLens's target market
   (Western/global engineering teams) will not accept without being asked.
 - **The Action treats a generation failure as a soft failure by default**
   (posts an explanatory comment, doesn't fail the CI run) unless

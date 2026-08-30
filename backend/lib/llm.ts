@@ -125,20 +125,99 @@ function stripCodeFence(text: string): string {
   return fenced?.[1] ? fenced[1].trim() : text;
 }
 
+export interface AnthropicConfig {
+  apiKey: string;
+  model: string;
+}
+
+interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+}
+
+/**
+ * Native client for Anthropic's Messages API. Not wire-compatible with
+ * OpenAI's chat completions format (different auth header, different
+ * request/response shape, system prompt is a top-level field rather than a
+ * message), so this is a separate implementation rather than another
+ * baseUrl swap on createOpenAiCompatProvider.
+ */
+export function createAnthropicProvider(
+  cfg: AnthropicConfig,
+  fetchImpl: typeof fetch = fetch
+): LlmProvider {
+  return {
+    name: "anthropic",
+    async generateMermaid(prompt: string): Promise<string> {
+      if (!cfg.apiKey) {
+        throw new Error('Missing API key for LLM provider "anthropic"');
+      }
+
+      const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": cfg.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: cfg.model,
+          max_tokens: 800,
+          temperature: 0.2,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`LLM provider "anthropic" returned ${res.status}: ${text.slice(0, 500)}`);
+      }
+
+      const data = (await res.json()) as { content?: AnthropicContentBlock[] };
+      const textBlock = data.content?.find((block) => block.type === "text" && block.text);
+      if (!textBlock?.text) {
+        throw new Error('LLM provider "anthropic" returned no text content');
+      }
+      return stripCodeFence(textBlock.text.trim());
+    },
+  };
+}
+
 export interface LlmEnv {
   ARCHLENS_LLM_PROVIDER?: string;
+  ANTHROPIC_API_KEY?: string;
+  ARCHLENS_ANTHROPIC_MODEL?: string;
   OPENAI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
 }
 
 /**
- * Provider selection defaults to OpenAI. DeepSeek is opt-in only — sending a
- * paying customer's private-repo diff to a Chinese-domiciled model provider
- * by default is a trust and data-residency risk most SMB/enterprise buyers
- * won't accept without being asked first.
+ * Provider selection defaults to Anthropic — this deployment reuses an
+ * existing Claude API key (issued under its own Anthropic Console project,
+ * separate from any other product sharing the account, so spend and usage
+ * stay attributable to ArchLens) rather than provisioning a fresh OpenAI
+ * key. OpenAI and DeepSeek remain fully supported, opt-in via
+ * ARCHLENS_LLM_PROVIDER, for deployments that don't have that constraint.
+ * DeepSeek in particular stays opt-in only — sending a paying customer's
+ * private-repo diff to a Chinese-domiciled model provider by default is a
+ * trust and data-residency risk most SMB/enterprise buyers won't accept
+ * without being asked first.
  */
 export function getProvider(env: LlmEnv, fetchImpl: typeof fetch = fetch): LlmProvider {
-  const selected = (env.ARCHLENS_LLM_PROVIDER ?? "openai").toLowerCase();
+  const selected = (env.ARCHLENS_LLM_PROVIDER ?? "anthropic").toLowerCase();
+
+  if (selected === "openai") {
+    return createOpenAiCompatProvider(
+      {
+        name: "openai",
+        baseUrl: "https://api.openai.com",
+        apiKey: env.OPENAI_API_KEY ?? "",
+        model: "gpt-4o-mini",
+      },
+      fetchImpl
+    );
+  }
 
   if (selected === "deepseek") {
     return createOpenAiCompatProvider(
@@ -152,12 +231,10 @@ export function getProvider(env: LlmEnv, fetchImpl: typeof fetch = fetch): LlmPr
     );
   }
 
-  return createOpenAiCompatProvider(
+  return createAnthropicProvider(
     {
-      name: "openai",
-      baseUrl: "https://api.openai.com",
-      apiKey: env.OPENAI_API_KEY ?? "",
-      model: "gpt-4o-mini",
+      apiKey: env.ANTHROPIC_API_KEY ?? "",
+      model: env.ARCHLENS_ANTHROPIC_MODEL ?? "claude-haiku-4-5",
     },
     fetchImpl
   );

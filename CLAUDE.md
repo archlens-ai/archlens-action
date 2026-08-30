@@ -36,19 +36,39 @@ future session without checking — ask if it's unclear which one is active.
   the real Supabase-backed implementations use.
 - Stripe checkout + webhook code written (`api/checkout.ts`,
   `api/webhook/stripe.ts`) but **no live Stripe account/products exist yet**.
-- LLM client defaults to OpenAI (`gpt-4o-mini`), DeepSeek supported as an
-  explicit opt-in — **no live OpenAI or DeepSeek API key configured yet**.
+- LLM client defaults to Anthropic (`claude-haiku-4-5`), by deliberate
+  choice — Kith already runs on Claude, so ArchLens reuses that Anthropic
+  account rather than provisioning a fresh OpenAI key. OpenAI and DeepSeek
+  remain supported as explicit opt-ins. **No live Anthropic API key
+  configured yet** — needs its own Anthropic Console project (not Kith's
+  existing project/key) so spend is separately trackable; same "same
+  account, different project" pattern as the Supabase instruction below.
 
 ## What's NOT done — the real remaining work before this can charge anyone
 
 1. Create the actual GitHub repo and push this code (no `gh` CLI available
    in the sandbox this was built in — done locally, needs the user's GitHub
    auth to publish).
-2. Stand up a real Supabase project, run `db/schema.sql`, set
-   `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`, create the `diagrams`
-   Storage bucket (public read).
-3. Get an OpenAI API key, set `OPENAI_API_KEY`. Budget: see the unit
-   economics note in `marketing/launch-plan.md` — cap spend during testing.
+2. Stand up a **new Supabase project inside the same organization as Kith**
+   — explicitly NOT Kith's existing project (2026-08-29 instruction: "use
+   kith's creds but make sure to create different project under it do not
+   touch kiths data"). Run `db/schema.sql` against the new project, set
+   `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` to its (not Kith's) values,
+   create the `diagrams` Storage bucket (public read). As of this writing,
+   this is still blocked: the user chose browser automation to create it
+   (I'd drive Chrome using their live session), but Supabase wasn't logged
+   in when checked — sign-in requires entering a password/SSO, which I
+   won't do on their behalf. Needs the user to either log into Supabase in
+   their Chrome themselves first, or switch to one of the other two options
+   offered (paste new project keys after creating it manually, or hand over
+   a Supabase personal access token for the Management API).
+3. Get an Anthropic API key **from its own Anthropic Console project**, not
+   Kith's existing key — same isolation reasoning as Supabase, so ArchLens
+   spend doesn't mix with Kith's. Set `ANTHROPIC_API_KEY`. Budget: see the
+   unit economics note in `marketing/launch-plan.md` — cap spend during
+   testing (note: that doc was written when the plan was OpenAI; the
+   token-cost-per-diagram math needs redoing for Claude's pricing before
+   trusting any margin number).
 4. Create a Stripe account + two subscription Products/Prices (solo $12/mo,
    team $29/mo), set `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` /
    `STRIPE_PRICE_SOLO` / `STRIPE_PRICE_TEAM`.

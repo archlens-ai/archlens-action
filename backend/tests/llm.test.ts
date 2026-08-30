@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPrompt, buildRepairPrompt, createOpenAiCompatProvider, getProvider } from "../lib/llm.js";
+import {
+  buildPrompt,
+  buildRepairPrompt,
+  createAnthropicProvider,
+  createOpenAiCompatProvider,
+  getProvider,
+} from "../lib/llm.js";
 
 describe("buildPrompt", () => {
   it("includes file contents and a diagram-type hint", () => {
@@ -78,9 +84,55 @@ describe("createOpenAiCompatProvider", () => {
   });
 });
 
+describe("createAnthropicProvider", () => {
+  it("extracts the text block from a successful Messages API response", async () => {
+    const provider = createAnthropicProvider(
+      { apiKey: "sk-ant-test", model: "claude-haiku-4-5" },
+      fakeFetch(200, { content: [{ type: "text", text: "flowchart TD\n  A --> B" }] })
+    );
+    const result = await provider.generateMermaid("some prompt");
+    expect(result).toBe("flowchart TD\n  A --> B");
+  });
+
+  it("strips a markdown code fence if the model adds one anyway", async () => {
+    const provider = createAnthropicProvider(
+      { apiKey: "sk-ant-test", model: "claude-haiku-4-5" },
+      fakeFetch(200, { content: [{ type: "text", text: "```mermaid\nflowchart TD\n  A --> B\n```" }] })
+    );
+    const result = await provider.generateMermaid("some prompt");
+    expect(result).toBe("flowchart TD\n  A --> B");
+  });
+
+  it("throws when the API key is missing", async () => {
+    const provider = createAnthropicProvider({ apiKey: "", model: "claude-haiku-4-5" });
+    await expect(provider.generateMermaid("x")).rejects.toThrow(/Missing API key/);
+  });
+
+  it("throws with the status code on a non-ok response", async () => {
+    const provider = createAnthropicProvider(
+      { apiKey: "sk-ant-test", model: "claude-haiku-4-5" },
+      fakeFetch(500, { error: "boom" })
+    );
+    await expect(provider.generateMermaid("x")).rejects.toThrow(/500/);
+  });
+
+  it("throws when the response has no text content block", async () => {
+    const provider = createAnthropicProvider(
+      { apiKey: "sk-ant-test", model: "claude-haiku-4-5" },
+      fakeFetch(200, { content: [] })
+    );
+    await expect(provider.generateMermaid("x")).rejects.toThrow(/no text content/);
+  });
+});
+
 describe("getProvider", () => {
-  it("defaults to openai when no provider is configured", () => {
-    const provider = getProvider({ OPENAI_API_KEY: "sk-test" });
+  it("defaults to anthropic when no provider is configured", () => {
+    const provider = getProvider({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(provider.name).toBe("anthropic");
+  });
+
+  it("uses openai only when explicitly opted in", () => {
+    const provider = getProvider({ ARCHLENS_LLM_PROVIDER: "openai", OPENAI_API_KEY: "sk-test" });
     expect(provider.name).toBe("openai");
   });
 

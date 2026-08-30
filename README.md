@@ -67,9 +67,11 @@ no override is needed there.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | yes | Quota, cache, and SVG storage |
-| `OPENAI_API_KEY` | yes (default provider) | Diagram generation |
-| `ARCHLENS_LLM_PROVIDER` | no | `openai` (default) or `deepseek`, opt-in only |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | yes | Quota, cache, and SVG storage — its own Supabase **project**, created inside the same org as any other product on the account, never a shared/reused project |
+| `ANTHROPIC_API_KEY` | yes (default provider) | Diagram generation — issued under its own Anthropic Console project so spend/usage stays attributable to ArchLens even when the account is shared with another product |
+| `ARCHLENS_ANTHROPIC_MODEL` | no | Defaults to `claude-haiku-4-5` |
+| `ARCHLENS_LLM_PROVIDER` | no | `anthropic` (default), or `openai`/`deepseek` opt-in |
+| `OPENAI_API_KEY` | only if provider=openai | Diagram generation |
 | `DEEPSEEK_API_KEY` | only if provider=deepseek | Diagram generation |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | yes | Billing |
 | `STRIPE_PRICE_SOLO`, `STRIPE_PRICE_TEAM` | yes | Maps Stripe Price IDs to plans |
@@ -78,8 +80,8 @@ no override is needed there.
 ## Status
 
 Core product logic (diff compression, generation pipeline, quota/caching,
-billing provisioning, PR commenting) is built and tested — 53 passing tests
-plus a real end-to-end dry run. **Not yet done:** a live Supabase project,
-Stripe account, OpenAI key, GitHub Marketplace listing, or any real
-distribution — see `docs/ARCHITECTURE.md` and `marketing/` for what's
-scoped versus what's live.
+billing provisioning, PR commenting) is built and tested — 53+ passing
+tests plus a real end-to-end dry run. **Not yet done:** a live Supabase
+project, Stripe account, Anthropic API key, GitHub Marketplace listing, or
+any real distribution — see `docs/ARCHITECTURE.md` and `marketing/` for
+what's scoped versus what's live.
