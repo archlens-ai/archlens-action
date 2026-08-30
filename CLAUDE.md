@@ -159,7 +159,7 @@ future session without checking — ask if it's unclear which one is active.
    or outreach list — that was the explicit open question when this was
    scoped.
 
-## 8. Visual redesign (2026-08-30) — and a real correctness bug it caught
+## 8. Visual redesign (2026-08-30) — plus a claim made here that turned out wrong
 
 Anurag's exact words: "make it dark theme, good font, more understandable...
 it shouldnt just create diagrams for job, it should really impress the
@@ -169,30 +169,45 @@ boxes. Rebuilt with a GitHub-Primer-derived dark theme, a fixed 3-category
 color system (endpoint/logic/datastore), LLM-driven `subgraph` grouping by
 architecture layer, and `autonumber`/`Note over` polish for sequence
 diagrams. Full design writeup: `docs/ARCHITECTURE.md`'s "Visual design"
-section.
+section — read that section's correction note before this one, it has the
+full detail.
 
-**While prototyping this, found a real ship-blocking bug, not just a style
-gap:** Mermaid's default flowchart config renders labels as HTML inside
-`<foreignObject>`, which is invisible once the SVG is embedded via `<img>`
-— exactly how GitHub renders a Markdown image in a PR comment. Verified
-against real headless Chromium (not assumed): loaded the previous
-unstyled flowchart SVG through an actual `<img src>` tag and every node
-label was blank, boxes and edges only. **Every flowchart ArchLens had ever
-generated would have posted to a real PR with invisible text** — sequence
-diagrams were unaffected (different Mermaid renderer path). Fixed with
-`htmlLabels: false`, now a permanent regression test in
-`backend/tests/mermaid.test.ts` (`never renders flowchart labels as
-<foreignObject>`). Re-verified end to end with fresh live diagrams — see
-`scripts/.dry-run-output/live-diagram-github-preview.png` and
-`live-sequence-diagram-github-preview.png`, both rendered through the same
-real-Chromium-<img>-tag method used to catch the bug, not through mmdc's
-own PNG export (which uses a full browser context and would have hidden
-this the same way the bug hid itself for however long this shipped
-unnoticed).
+**This file previously said, in bold, that a ship-blocking bug was found
+and confirmed: that every flowchart ArchLens had ever generated would post
+to a real GitHub PR with invisible text, because Mermaid's default
+`foreignObject`-based labels supposedly don't render when an SVG is
+embedded via `<img>`.** That claim was based on two flawed tests (a
+`sharp`/librsvg rasterization, which really doesn't support
+`foreignObject` but is irrelevant to how GitHub displays the image; and a
+first real-browser test loaded over `file://`, which was very likely
+blocked by Chromium's own cross-origin file restrictions, not by
+`foreignObject`). A properly controlled re-test — real HTTP server, real
+headless Chromium, an actual `<img src>` tag, waited for full image
+decode — shows `foreignObject`-based labels rendering completely
+correctly. **The bug was not real, or at least was never actually
+demonstrated; the claim should not have been stated as confirmed fact,**
+and it's left here rather than deleted so a future session doesn't
+independently rediscover the same false alarm.
+
+`flowchart.htmlLabels: false` is still in the code, and that part's a
+legitimate, independently-justified call: plain SVG `<text>` is more
+broadly portable than `foreignObject` across SVG consumers in general
+(genuine complaints about this exist in Mermaid's own issue tracker,
+unrelated to GitHub specifically), and it removes any dependency on
+however GitHub's own image pipeline happens to treat embedded HTML —
+which was never actually tested against a live GitHub PR from this
+sandbox (no push access here) and remains the one still-open unknown.
+Treat it as a sensible default, not as a fix for a proven incident. There
+is still a real, permanent regression test in `backend/tests/mermaid.test.ts`
+against `foreignObject` reappearing — that stays, it's just testing for a
+portability property now, not "the bug."
 
 Tests: 65 → 70 backend (84 total). Not done yet: a light-mode variant via
 GitHub's `<picture>` + `prefers-color-scheme` (flagged as a follow-up, not
-built speculatively — see ARCHITECTURE.md for why).
+built speculatively — see ARCHITECTURE.md for why). Also not done: an
+actual live spot-check of a real posted GitHub PR comment, which is the
+only way to fully close the still-open unknown above — needs deployment
+first.
 
 ## Environment notes from the sandbox this was built in
 

@@ -125,21 +125,41 @@ indistinguishable from a five-minute mermaid.live sketch — not something a
 team would pay $12-29/month for. The fix isn't cosmetic-only; it also caught
 a real correctness bug:
 
-**The foreignObject bug.** Mermaid v10+ defaults flowchart labels to HTML
-text rendered inside `<foreignObject>` elements rather than plain SVG
-`<text>`. That renders fine in a browser tab that navigates directly to the
-SVG, or in mmdc's own PNG export — but a GitHub PR comment embeds the image
-via Markdown (`![...](url)`), which compiles to a plain `<img src="...">`
-tag. Verified against real headless Chromium: an SVG with `foreignObject`
-labels loaded through an `<img>` tag renders the node boxes and edges but
-every label is blank — no error, no console warning, just empty rectangles.
-**Every flowchart ArchLens had generated before this fix would have posted
-with invisible text on GitHub itself.** Sequence diagrams were never
-affected (Mermaid renders those as plain SVG `<text>`). Fixed by setting
-`flowchart.htmlLabels: false` in `ARCHLENS_THEME_CONFIG` — confirmed via the
-same img-tag-in-real-Chromium test that real `<text>` elements now render
-correctly. `backend/tests/mermaid.test.ts` has a permanent regression test
-asserting rendered flowchart output never contains `foreignObject`.
+**A note on `foreignObject`, corrected after this was first written.**
+Mermaid v10+ defaults flowchart labels to HTML text rendered inside
+`<foreignObject>` elements rather than plain SVG `<text>`. An early test
+that rasterized the SVG via `sharp`/librsvg for a quick visual check came
+out with completely blank labels, and a first, hasty test of the real
+`<img>`-embed path (loaded over `file://`, not `http://`) also came out
+blank — both were read as proof that GitHub itself would show invisible
+text on every flowchart ever generated, and that was written up here and
+told to Anurag as a confirmed ship-blocking bug. It wasn't warranted. A
+proper re-test — a real local HTTP server, real headless Chromium, an
+actual `<img src="...">` tag, an explicit wait for the image to finish
+decoding before screenshotting — renders `foreignObject`-based labels
+completely correctly. The `sharp`/librsvg result was a rasterizer
+limitation (librsvg doesn't support `foreignObject`) that has nothing to
+do with how GitHub or a real browser display the image, and the first
+`file://` test was very likely blocked by Chromium's own restrictions on
+loading local files cross-origin, not by `foreignObject` itself. **The
+"every diagram ever posted was invisible" claim was wrong** — filed here
+as a correction, not quietly dropped, because it was stated as fact.
+
+What's still true and still worth keeping: `flowchart.htmlLabels: false`
+(plain SVG `<text>` instead of HTML-in-`foreignObject`) is a reasonable
+hardening choice on its own merits — it's more portable across SVG
+consumers in general (this is a real, independently-documented complaint
+against Mermaid's foreignObject labels — see the tool's own issue tracker
+on cross-application compatibility), and it removes any dependency on
+however GitHub's own image-serving path happens to treat embedded HTML
+inside an SVG, which was never actually tested against a live GitHub PR
+from this sandbox (no push access here) and is the one piece that's still
+genuinely unverified. So the change stays, `backend/tests/mermaid.test.ts`
+keeps its regression test against `foreignObject`, but it should be
+described as a portability/defensive improvement, not as fixing a
+confirmed live outage. Worth a real spot-check — post one actual PR
+comment once this is deployed and open it on github.com — before this
+section is trusted at face value.
 
 **The theme itself** is a dark palette derived from GitHub's own Primer
 design tokens (background `#0d1117`, node fill `#1c2128`, text `#e6edf3`,
