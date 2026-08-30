@@ -64,6 +64,14 @@ describe("applyArchLensStyling", () => {
     }
   });
 
+  // Round-3 addition, from a second review: refactors/removals are a
+  // routine PR category for this audience and there was no visual state
+  // for "this PR deletes X" — only changed/context.
+  it("appends a removed classDef for diffs that delete a node entirely", () => {
+    const styled = applyArchLensStyling('flowchart TD\n  A["x"]\n  class A removed');
+    expect(styled).toContain("classDef removed");
+  });
+
   it("strips any classDef the model emitted anyway, keeping only ArchLens's own", () => {
     const styled = applyArchLensStyling(
       'flowchart TD\n  A["x"]\n  classDef endpoint fill:#ff0000\n  class A endpoint'
@@ -82,28 +90,38 @@ describe("appendLegend", () => {
   const sampleSvg =
     '<svg id="my-svg" viewBox="0 0 100 200" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="200"/></svg>';
 
-  it("grows the viewBox to fit the legend below the diagram", () => {
+  it("grows the viewBox to fit the legend card below the diagram", () => {
     const withLegend = appendLegend(sampleSvg, "flowchart");
     const match = withLegend.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
     expect(match).not.toBeNull();
-    // A 100-unit-wide diagram is far narrower than the 5-entry legend needs —
-    // width must grow too, or entries silently clip off the edge (a real bug
-    // caught in visual QA: a 2-node diagram's legend row ran off-canvas
-    // because only height was ever adjusted, never width).
+    // A 100-unit-wide diagram is far narrower than the legend card needs —
+    // width must grow too, or the card clips off the edge (a real bug
+    // caught in visual QA: only height was ever adjusted, never width).
     expect(Number(match?.[1])).toBeGreaterThan(100);
     expect(Number(match?.[2])).toBeGreaterThan(200);
-    expect(withLegend).toContain("Changed by this PR");
-    expect(withLegend).toContain("Existing context");
     expect(withLegend).toContain("</svg>");
   });
 
-  it("wraps legend entries onto more than one row when the diagram is too narrow for one row", () => {
+  // Round-3 redesign, from a second review: v2 listed changed/context and
+  // endpoint/logic/datastore as five disconnected swatches, so a viewer
+  // had to cross-reference two lists to decode "solid blue". Each category
+  // now gets one row pairing its solid (changed) and dashed (context)
+  // swatch together, with the solid/dashed meaning explained once.
+  it("pairs a solid and dashed swatch on the same row per category, not as separate disconnected entries", () => {
     const withLegend = appendLegend(sampleSvg, "flowchart");
-    // 5 entries at ~12px font cannot fit in one row within any width this
-    // narrow diagram would plausibly grow to without wrapping — assert
-    // multiple distinct y positions are actually used.
-    const yValues = new Set([...withLegend.matchAll(/<text x="[\d.]+" y="([\d.]+)"/g)].map((m) => m[1]));
-    expect(yValues.size).toBeGreaterThan(1);
+    expect(withLegend).toContain("solid = changed by this PR");
+    expect(withLegend).toContain("dashed = existing context");
+    expect(withLegend).toContain("Removed by this PR");
+    // Each of the 3 categories renders two swatch <rect>s on its row (solid
+    // + dashed) — count non-dashed vs dashed swatch rects to confirm both
+    // variants are actually present, not just the labels.
+    const dashedSwatches = withLegend.match(/stroke-dasharray="3 2"/g) ?? [];
+    expect(dashedSwatches.length).toBeGreaterThanOrEqual(3); // one per category row
+  });
+
+  it("draws the legend inside a bordered card rather than loose floating text", () => {
+    const withLegend = appendLegend(sampleSvg, "flowchart");
+    expect(withLegend).toContain('stroke="#30363d"');
   });
 
   it("is a no-op for sequenceDiagram, where the category legend doesn't apply", () => {
@@ -157,8 +175,8 @@ describe("renderMermaidToSvg (integration)", () => {
       'flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint\n  class B datastoreContext',
       { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
     );
-    expect(svg).toContain("Changed by this PR");
-    expect(svg).toContain("Existing context");
+    expect(svg).toContain("solid = changed by this PR");
+    expect(svg).toContain("dashed = existing context");
   }, 30_000);
 
   it("refuses to render invalid mermaid source", async () => {

@@ -97,6 +97,12 @@ export const ARCHLENS_THEME_CONFIG = {
 // tinted subgraph fills, one hue per layer) replace the old flat
 // clusterBkg so grouped layers read as instantly distinct regions rather
 // than text labels inside thin outlines.
+// Round-3 addition, from a second review: refactors and outright removals
+// are a routine PR category for this product's own target audience
+// (backend/DevOps leads), and there was no way to show "this PR deletes
+// X" — only changed/context. A single generic `removed` category (not
+// split per endpoint/logic/datastore — once something's gone, which
+// category it used to be matters less than the fact it's gone) covers it.
 const CATEGORY_CLASS_DEFS = [
   "classDef endpoint fill:#1c2128,stroke:#58a6ff,stroke-width:2px,color:#e6edf3",
   "classDef logic fill:#1c2128,stroke:#7ee787,stroke-width:2px,color:#e6edf3",
@@ -107,14 +113,61 @@ const CATEGORY_CLASS_DEFS = [
   "classDef endpointRegion fill:#12202e,stroke:#1c2128,color:#e6edf3",
   "classDef logicRegion fill:#122417,stroke:#1c2128,color:#e6edf3",
   "classDef datastoreRegion fill:#1c1a2e,stroke:#1c2128,color:#e6edf3",
+  "classDef removed fill:#2d1a1f,stroke:#f85149,stroke-width:1.5px,stroke-dasharray:2 2,color:#ffa198",
 ].join("\n");
 
-const LEGEND_ENTRIES: Array<{ label: string; fill: string; stroke: string; dashed: boolean }> = [
-  { label: "Changed by this PR", fill: "#1c2128", stroke: "#e6edf3", dashed: false },
-  { label: "Existing context", fill: "#161b22", stroke: "#8b949e", dashed: true },
-  { label: "Endpoint", fill: "#1c2128", stroke: "#58a6ff", dashed: false },
-  { label: "Logic", fill: "#1c2128", stroke: "#7ee787", dashed: false },
-  { label: "Datastore", fill: "#1c2128", stroke: "#bc8cff", dashed: false },
+interface LegendSwatch {
+  fill: string;
+  stroke: string;
+  dashed: boolean;
+}
+
+interface LegendRow {
+  label: string;
+  swatches: LegendSwatch[];
+}
+
+// Round-3 redesign, from a second review: v2's legend listed
+// changed/context and endpoint/logic/datastore as five disconnected
+// swatches, so a viewer had to mentally cross two independent lists to
+// decode what "solid blue" actually means. Each category now gets one row
+// showing its solid (changed) and dashed (context) swatch side by side —
+// the combination the diagram actually uses — with the solid/dashed
+// meaning explained once, up top, rather than repeated per row.
+const LEGEND_ROWS: LegendRow[] = [
+  {
+    // A middle-dot separator, not repeated spaces: SVG <text> collapses
+    // consecutive whitespace to a single space (a real rendering gap
+    // caught in visual QA — the two clauses ran together illegibly), so
+    // spacing needs an actual character, not just more space characters.
+    label: "solid = changed by this PR  ·  dashed = existing context",
+    swatches: [],
+  },
+  {
+    label: "Endpoint",
+    swatches: [
+      { fill: "#1c2128", stroke: "#58a6ff", dashed: false },
+      { fill: "#161b22", stroke: "#58a6ff", dashed: true },
+    ],
+  },
+  {
+    label: "Logic",
+    swatches: [
+      { fill: "#1c2128", stroke: "#7ee787", dashed: false },
+      { fill: "#161b22", stroke: "#7ee787", dashed: true },
+    ],
+  },
+  {
+    label: "Datastore",
+    swatches: [
+      { fill: "#1c2128", stroke: "#bc8cff", dashed: false },
+      { fill: "#161b22", stroke: "#bc8cff", dashed: true },
+    ],
+  },
+  {
+    label: "Removed by this PR",
+    swatches: [{ fill: "#2d1a1f", stroke: "#f85149", dashed: true }],
+  },
 ];
 
 /**
@@ -140,13 +193,18 @@ export function applyArchLensStyling(source: string): string {
 }
 
 /**
- * Appends a small legend to a rendered flowchart SVG: a colored swatch +
- * label per category, so the endpoint/logic/datastore/context color
- * convention is self-explanatory to a first-time PR viewer instead of
- * something they'd have to already know. Server-side post-processing
- * (rather than asking the LLM to draw it) means it's always present,
- * always correct, and can never be corrupted by model output. A no-op for
- * sequenceDiagram, where the category system doesn't apply.
+ * Appends a legend card to a rendered flowchart SVG: one row per category
+ * showing its solid (changed-by-this-PR) and dashed (existing-context)
+ * swatch side by side — the actual combination the diagram uses — plus a
+ * one-line caption explaining what solid/dashed means, instead of listing
+ * category and changed-status as separate, uncombined swatches (a real
+ * gap a review caught: a viewer had to cross-reference two lists to
+ * decode "solid blue"). Drawn inside a bordered card so it reads as a
+ * designed legend rather than loose text floating below the diagram.
+ * Server-side post-processing (rather than asking the LLM to draw it)
+ * means it's always present, always correct, and can never be corrupted
+ * by model output. A no-op for sequenceDiagram, where this category
+ * system doesn't apply.
  */
 export function appendLegend(svg: string, diagramType: "flowchart" | "sequence"): string {
   if (diagramType !== "flowchart") {
@@ -165,45 +223,51 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
     number,
   ];
 
-  const rowHeight = 30;
+  const rowHeight = 26;
   const swatchSize = 12;
-  const gap = 10;
+  const swatchGap = 6;
   const fontSize = 12;
-  const padding = 12;
-  // Narrow diagrams (a 2-node flowchart is ~470 units wide) can't fit all 5
-  // legend entries on one row — a bug caught in visual QA where the last
-  // 1-2 entries silently clipped off the right edge of the SVG's own
-  // viewBox instead of wrapping. Wrap to a new row instead of assuming the
-  // diagram is wide enough.
-  const availableWidth = Math.max(width, 260);
+  const cardPadding = 14;
+  const labelColX = cardPadding + 92; // fixed column so every row's swatches line up
 
-  let cursorX = padding;
-  let row = 0;
-  const itemGroups: string[] = [];
-  for (const entry of LEGEND_ENTRIES) {
-    const estimatedWidth = swatchSize + 6 + entry.label.length * (fontSize * 0.58) + gap * 2;
-    if (cursorX + estimatedWidth > availableWidth && cursorX > padding) {
-      row += 1;
-      cursorX = padding;
+  // A row's width is driven by however many swatches it has (1 or 2) plus
+  // its label length — used only to size the card, since layout itself is
+  // a fixed label column followed by swatches, not a wrapping flow.
+  const widestLabelChars = Math.max(...LEGEND_ROWS.map((r) => r.label.length));
+  const neededWidth = labelColX + widestLabelChars * (fontSize * 0.56) + cardPadding;
+  const cardWidth = Math.max(Math.min(width, neededWidth), 320);
+
+  const rows = LEGEND_ROWS.map((row, i) => {
+    const y = cardPadding + i * rowHeight;
+    let swatchesSvg = "";
+    if (row.swatches.length > 0) {
+      let sx = cardPadding;
+      swatchesSvg = row.swatches
+        .map((sw) => {
+          const dash = sw.dashed ? ' stroke-dasharray="3 2"' : "";
+          const rect = `<rect x="${sx}" y="${y + (rowHeight - swatchSize) / 2}" width="${swatchSize}" height="${swatchSize}" rx="2" fill="${sw.fill}" stroke="${sw.stroke}" stroke-width="1.5"${dash}/>`;
+          sx += swatchSize + swatchGap;
+          return rect;
+        })
+        .join("");
     }
-    const rowY = row * rowHeight;
-    const dash = entry.dashed ? ' stroke-dasharray="3 2"' : "";
-    const textX = cursorX + swatchSize + 6;
-    const swatch = `<rect x="${cursorX}" y="${rowY + (rowHeight - swatchSize) / 2}" width="${swatchSize}" height="${swatchSize}" rx="2" fill="${entry.fill}" stroke="${entry.stroke}" stroke-width="1.5"${dash}/>`;
-    const label = `<text x="${textX}" y="${rowY + rowHeight / 2}" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="#8b949e">${escapeXml(entry.label)}</text>`;
-    itemGroups.push(swatch + label);
-    cursorX = textX + entry.label.length * (fontSize * 0.58) + gap * 2;
-  }
-  const legendHeight = (row + 1) * rowHeight + 4;
-  const itemsSvg = itemGroups.join("");
+    const labelX = row.swatches.length > 0 ? labelColX : cardPadding;
+    const labelColor = row.swatches.length === 0 ? "#8b949e" : "#e6edf3";
+    const label = `<text x="${labelX}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="${labelColor}">${escapeXml(row.label)}</text>`;
+    return swatchesSvg + label;
+  }).join("");
+
+  const cardHeight = cardPadding + LEGEND_ROWS.length * rowHeight;
+  const outerMargin = 10;
+  const legendHeight = cardHeight + outerMargin * 2;
 
   const newHeight = height + legendHeight;
-  const newWidth = Math.max(width, availableWidth);
+  const newWidth = Math.max(width, cardWidth + outerMargin * 2);
   // mmdc's root <svg> also carries a `max-width: <old-width>px` inline
   // style alongside width="100%" — since the aspect ratio changes when the
   // legend adds height (and possibly width), that style has to move with
   // the viewBox or the browser clamps display width to the stale value and
-  // the added legend row renders squashed.
+  // the added legend renders squashed.
   const resized = svg
     .replace(
       /viewBox="[\d.\-]+ [\d.\-]+ [\d.\-]+ [\d.\-]+"/,
@@ -211,7 +275,12 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
     )
     .replace(/max-width:\s*[\d.]+px/, `max-width: ${newWidth}px`);
 
-  const legendGroup = `<g transform="translate(0, ${height})"><rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#0d1117"/>${itemsSvg}</g>`;
+  const legendGroup = `<g transform="translate(0, ${height})">` +
+    `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#0d1117"/>` +
+    `<g transform="translate(${outerMargin}, ${outerMargin})">` +
+    `<rect x="0" y="0" width="${cardWidth}" height="${cardHeight}" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>` +
+    rows +
+    `</g></g>`;
 
   return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);
 }

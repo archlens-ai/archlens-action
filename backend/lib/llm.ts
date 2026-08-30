@@ -61,18 +61,30 @@ architecture map or just a scatter of boxes, so follow it closely:
   column has a foreign key to, an existing service a new endpoint calls,
   but the diff doesn't touch that table/service itself) gets the
   \`Context\`-suffixed variant instead: \`endpointContext\`,
-  \`logicContext\`, \`datastoreContext\`. If you cannot tell from the diff
-  whether something existed before, default it to Context rather than
-  guessing it's new. Example: \`class A,B endpoint\` (new/changed) and
-  \`class C datastoreContext\` (pre-existing, referenced only) in the same
-  diagram. Every node must appear in exactly one class line total (combine
-  multiple nodes of the same category into one line rather than repeating
-  a node).
+  \`logicContext\`, \`datastoreContext\`. If the diff removes something
+  entirely (a deleted endpoint, dropped table, removed function), still
+  show it so the removal is visible, but give it the \`removed\` category
+  instead of its usual one. If you cannot tell from the diff whether
+  something existed before, default it to Context rather than guessing
+  it's new. Example: \`class A,B endpoint\` (new/changed), \`class C
+  datastoreContext\` (pre-existing, referenced only), \`class D removed\`
+  (deleted by this diff) in the same diagram. Every node must appear in
+  exactly one class line total (combine multiple nodes of the same
+  category into one line rather than repeating a node).
 - For "sequenceDiagram" diagrams, start with \`autonumber\` so steps are
-  referenceable in review comments. Declare the true external caller (a
-  human user, or an outside client) with \`actor Name\` and every internal
-  service/component with \`participant Name\` — this distinguishes "who's
-  outside the system" from "what's inside it" at a glance. Add a brief
+  referenceable in review comments. Declare with \`actor Name\` anything
+  outside this codebase's own control — a human user, or an external
+  third-party system/API (a payment gateway, an outside email provider) —
+  and everything this codebase actually implements with \`participant
+  Name\`; this distinguishes "outside the system" from "inside it" at a
+  glance, the sequence-diagram equivalent of the endpoint/logic/datastore
+  split. **Also show diff-awareness here, the same way flowchart does**:
+  wrap the message exchanges that are genuinely new in this PR in
+  \`rect rgba(88, 166, 255, 0.08)\` ... \`end\` (exact color, so every
+  diagram's "new" highlight matches) — leave pre-existing call flow the
+  diff doesn't touch outside any rect block. If the whole exchange is new,
+  wrap the entire sequence; if only part of it is new (e.g. an existing
+  flow gained one new step), wrap only that part. Add a brief
   \`Note over X: ...\` only where it clarifies a non-obvious side effect
   (an external API call, a DB write, an async job) — not on every message,
   at most 2-3 notes total.`;
