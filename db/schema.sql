@@ -71,3 +71,21 @@ alter table orgs enable row level security;
 alter table api_keys enable row level security;
 alter table usage_logs enable row level security;
 alter table diagram_cache enable row level security;
+
+-- Explicit grants for service_role. Do NOT assume Supabase's default
+-- schema-level ACLs (anon/authenticated/service_role grants + "ALTER
+-- DEFAULT PRIVILEGES") auto-propagate to tables created by running this
+-- file directly in the SQL Editor — verified against a real freshly
+-- created project (2026-08-30) that they don't: every table returned
+-- `permission denied for table X` (Postgres 42501) over the REST API with
+-- a valid service_role JWT until these grants were added explicitly, even
+-- though RLS + service_role's BYPASSRLS attribute were both already
+-- correct. RLS and plain GRANT privileges are two independent gates in
+-- Postgres — bypassing RLS does not imply having a table grant. anon and
+-- authenticated intentionally get nothing here (see above: no public
+-- access path at all).
+grant select, insert, update, delete on orgs, api_keys, usage_logs, diagram_cache to service_role;
+grant execute on function increment_api_key_usage(text) to service_role;
+grant execute on function reset_monthly_usage() to service_role;
+alter default privileges in schema public grant select, insert, update, delete on tables to service_role;
+alter default privileges in schema public grant execute on functions to service_role;

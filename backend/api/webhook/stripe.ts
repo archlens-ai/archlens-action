@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
-import { buildPriceMap, buildProvisioningRecord, resolvePlan } from "../../lib/billing.js";
+import { buildPriceMap } from "../../lib/billing.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
+import { handleStripeWebhookRequest, type WebhookDeps } from "../../lib/webhook-handler.js";
 
 // Vercel needs the raw body to verify the Stripe signature — disable the
 // default JSON body parser for this route.
@@ -26,36 +27,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const stripe = new Stripe(stripeSecretKey);
   const rawBody = await readRawBody(req);
   const signature = req.headers["stripe-signature"];
-
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(rawBody, signature as string, webhookSecret);
-  } catch (err) {
-    res.status(400).json({
-      code: "invalid_signature",
-      message: err instanceof Error ? err.message : "Invalid Stripe signature.",
-    });
-    return;
-  }
-
   const priceMap = buildPriceMap(process.env);
-  const client = getSupabaseClient();
 
-  switch (event.type) {
-    case "checkout.session.completed": {
-      const session = event.data.object as Stripe.Checkout.Session;
-      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
-      const priceId = lineItems.data[0]?.price?.id;
-      const plan = priceId ? resolvePlan(priceId, priceMap) : null;
-
-      if (!plan || typeof session.customer !== "string") {
-        // Unknown price ID or missing customer — don't silently 200 an
-        // event we can't act on; log it for manual follow-up.
-        res.status(200).json({ received: true, warning: "unrecognized plan or customer" });
-        return;
-      }
-
-      const record = buildProvisioningRecord({ plan, stripeCustomerId: session.customer });
+  const deps: WebhookDeps = {
+    verifyEvent(body, sig) {
+      return stripe.webhooks.constructEvent(body, sig, webhookSecret);
+    },
+    async getCheckoutSessionPriceId(sessionId) {
+      const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 1 });
+      return lineItems.data[0]?.price?.id;
+    },
+    async upsertApiKeyForCheckout(record) {
+      const client = getSupabaseClient();
       await client.from("api_keys").insert({
         key: record.apiKey,
         org_id: record.orgId,
@@ -66,22 +49,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       });
       // The customer's actual key delivery (dashboard + email) is a
       // separate, non-webhook-blocking step — see docs/ARCHITECTURE.md.
-      break;
-    }
+    },
+    async setApiKeysActiveByCustomer(customerId, active) {
+      const client = getSupabaseClient();
+      await client.from("api_keys").update({ active }).eq("stripe_customer_id", customerId);
+    },
+  };
 
-    case "customer.subscription.deleted":
-    case "invoice.payment_failed": {
-      const obj = event.data.object as { customer: string };
-      await client
-        .from("api_keys")
-        .update({ active: false })
-        .eq("stripe_customer_id", obj.customer);
-      break;
-    }
-
-    default:
-      break;
-  }
-
-  res.status(200).json({ received: true });
+  const result = await handleStripeWebhookRequest(rawBody, signature as string | undefined, priceMap, deps);
+  res.status(result.status).json(result.body);
 }
