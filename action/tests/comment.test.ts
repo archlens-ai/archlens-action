@@ -27,6 +27,31 @@ describe("buildCommentBody", () => {
     });
     expect(body).toContain("⚠️ This diff was larger");
   });
+
+  it("includes the PR number and matched-file count when provided, so the image is self-identifying out of thread context", () => {
+    const body = buildCommentBody({
+      svgUrl: "https://cdn.archlens.dev/abc123.svg",
+      mermaidSource: "flowchart TD\n  A --> B",
+      diagramType: "flowchart",
+      truncated: false,
+      repoFullName: "acme/widgets",
+      prNumber: 482,
+      filesMatched: 3,
+    });
+    expect(body).toContain("PR #482");
+    expect(body).toContain("3 files matched");
+  });
+
+  it("omits the PR context segment when prNumber/filesMatched aren't provided", () => {
+    const body = buildCommentBody({
+      svgUrl: "https://cdn.archlens.dev/abc123.svg",
+      mermaidSource: "flowchart TD\n  A --> B",
+      diagramType: "flowchart",
+      truncated: false,
+      repoFullName: "acme/widgets",
+    });
+    expect(body).not.toContain("PR #");
+  });
 });
 
 function makeFakeOctokit(existingComments: Array<{ id: number; body: string }>) {

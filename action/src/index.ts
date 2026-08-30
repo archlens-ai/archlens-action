@@ -73,6 +73,8 @@ async function run(): Promise<void> {
       diagramType: result.diagramType,
       truncated: diff.truncated,
       repoFullName: `${owner}/${repo}`,
+      prNumber,
+      filesMatched: diff.files.length,
     });
 
     const commentUrl = await upsertComment(octokit, owner, repo, prNumber, body);

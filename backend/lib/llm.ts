@@ -43,19 +43,39 @@ architecture map or just a scatter of boxes, so follow it closely:
   group them with Mermaid \`subgraph\` blocks using a short human-readable
   title, e.g. \`subgraph API["API Layer"]\` ... \`end\`. Use at most 3-4
   subgraphs. Skip subgraphs entirely for a small diagram (2-3 nodes total)
-  where grouping would add noise rather than clarity.
+  where grouping would add noise rather than clarity. Give each subgraph
+  a region class matching its dominant category — \`class API
+  endpointRegion\`, \`class Logic logicRegion\`, \`class Data
+  datastoreRegion\` — right after its \`end\`.
 - Every flowchart node MUST get exactly one category via a \`class\` line —
   never a \`classDef\` (ArchLens applies its own fixed color palette
-  server-side; a classDef you emit is discarded). Valid categories are only:
-  \`endpoint\` (routes, controllers, API handlers), \`logic\` (services,
+  server-side; a classDef you emit is discarded). The three base categories
+  are: \`endpoint\` (routes, controllers, API handlers), \`logic\` (services,
   business logic, background jobs), \`datastore\` (tables, schemas, caches,
-  queues). Example: \`class A,B endpoint\`. Every node must appear in exactly
-  one class line total (combine multiple nodes of the same category into one
-  line rather than repeating a node).
+  queues).
+- **Distinguish what this PR actually changed from pre-existing context.**
+  This diagram's whole purpose is showing a diff's impact, not just a
+  static picture of the resulting architecture — so a node the diff adds
+  or modifies gets its plain category (\`endpoint\`/\`logic\`/\`datastore\`);
+  a node that's only referenced for context (e.g. an existing table a new
+  column has a foreign key to, an existing service a new endpoint calls,
+  but the diff doesn't touch that table/service itself) gets the
+  \`Context\`-suffixed variant instead: \`endpointContext\`,
+  \`logicContext\`, \`datastoreContext\`. If you cannot tell from the diff
+  whether something existed before, default it to Context rather than
+  guessing it's new. Example: \`class A,B endpoint\` (new/changed) and
+  \`class C datastoreContext\` (pre-existing, referenced only) in the same
+  diagram. Every node must appear in exactly one class line total (combine
+  multiple nodes of the same category into one line rather than repeating
+  a node).
 - For "sequenceDiagram" diagrams, start with \`autonumber\` so steps are
-  referenceable in review comments. Add a brief \`Note over X: ...\` only
-  where it clarifies a non-obvious side effect (an external API call, a DB
-  write, an async job) — not on every message, at most 2-3 notes total.`;
+  referenceable in review comments. Declare the true external caller (a
+  human user, or an outside client) with \`actor Name\` and every internal
+  service/component with \`participant Name\` — this distinguishes "who's
+  outside the system" from "what's inside it" at a glance. Add a brief
+  \`Note over X: ...\` only where it clarifies a non-obvious side effect
+  (an external API call, a DB write, an async job) — not on every message,
+  at most 2-3 notes total.`;
 
 export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): string {
   const hint =
