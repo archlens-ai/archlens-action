@@ -45,7 +45,7 @@ it entirely on a public repo to use the shared, rate-limited free-tier key.
 npm install
 
 npm run lint    # tsc --noEmit, both workspaces
-npm test        # vitest, both workspaces (53 tests)
+npm test        # vitest, both workspaces (84 tests)
 npm run build   # bundles action/dist/index.js via @vercel/ncc
 npm run dry-run # full pipeline smoke test — needs a local Chromium; see below
 ```

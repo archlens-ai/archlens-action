@@ -34,7 +34,28 @@ relate to each other. Rules:
   never invent components that aren't evidenced by the diff.
 - If the diff is too small or unclear to depict a meaningful diagram, output
   exactly: flowchart TD\\n  A["No structural change detected"]
-- Never include raw file contents verbatim beyond short identifiers.`;
+- Never include raw file contents verbatim beyond short identifiers.
+
+Visual structure — this determines whether the diagram actually reads as an
+architecture map or just a scatter of boxes, so follow it closely:
+- For "flowchart" diagrams, when the nodes naturally fall into distinct
+  architectural layers (e.g. API/routing, business logic, data/storage),
+  group them with Mermaid \`subgraph\` blocks using a short human-readable
+  title, e.g. \`subgraph API["API Layer"]\` ... \`end\`. Use at most 3-4
+  subgraphs. Skip subgraphs entirely for a small diagram (2-3 nodes total)
+  where grouping would add noise rather than clarity.
+- Every flowchart node MUST get exactly one category via a \`class\` line —
+  never a \`classDef\` (ArchLens applies its own fixed color palette
+  server-side; a classDef you emit is discarded). Valid categories are only:
+  \`endpoint\` (routes, controllers, API handlers), \`logic\` (services,
+  business logic, background jobs), \`datastore\` (tables, schemas, caches,
+  queues). Example: \`class A,B endpoint\`. Every node must appear in exactly
+  one class line total (combine multiple nodes of the same category into one
+  line rather than repeating a node).
+- For "sequenceDiagram" diagrams, start with \`autonumber\` so steps are
+  referenceable in review comments. Add a brief \`Note over X: ...\` only
+  where it clarifies a non-obvious side effect (an external API call, a DB
+  write, an async job) — not on every message, at most 2-3 notes total.`;
 
 export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): string {
   const hint =

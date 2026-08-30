@@ -95,6 +95,79 @@ secret). Quota enforcement (`backend/lib/quota.ts`) and content-hash caching
 (`backend/lib/cache.ts`) both run against Supabase, gating every request the
 Action makes to `/v1/generate`.
 
+Both routes are thin Vercel wrappers over pure, dependency-injected handlers
+— `backend/lib/checkout-handler.ts` and `backend/lib/webhook-handler.ts` —
+following the same pattern as `generate-handler.ts`. This isn't just a style
+preference: it's what makes the webhook's Stripe-signature verification and
+provisioning logic unit-testable at all without a live Stripe account,
+using `stripe.webhooks.generateTestHeaderString` to construct genuinely
+validly-signed test payloads (pure local HMAC, no network call, no account
+needed) — see `backend/tests/webhook-handler.test.ts`.
+
+**Payment-failure handling deliberately reacts to `customer.subscription.
+updated`, not raw `invoice.payment_failed`.** `invoice.payment_failed`
+fires on *every* retry attempt during Stripe's dunning/Smart Retries flow,
+not just the final one — gating API access on the first occurrence would
+cut off a paying customer's whole team over one transient card decline,
+before Stripe's own retry schedule even gets a chance to succeed. Instead,
+access is only revoked once the subscription itself transitions to
+`unpaid`/`canceled` (which Stripe does automatically after retries are
+exhausted), and is restored if it recovers back to `active`. A `past_due`
+subscription is left alone — a deliberate grace period, not an oversight.
+`customer.subscription.deleted` remains a hard, immediate cutoff.
+
+## Visual design
+
+The first version of the renderer (`backend/lib/mermaid.ts`) passed Mermaid's
+output straight to `mmdc` with only `-b transparent` — no theme, no font, no
+color, no grouping. It worked, but it produced generic default-Mermaid boxes
+indistinguishable from a five-minute mermaid.live sketch — not something a
+team would pay $12-29/month for. The fix isn't cosmetic-only; it also caught
+a real correctness bug:
+
+**The foreignObject bug.** Mermaid v10+ defaults flowchart labels to HTML
+text rendered inside `<foreignObject>` elements rather than plain SVG
+`<text>`. That renders fine in a browser tab that navigates directly to the
+SVG, or in mmdc's own PNG export — but a GitHub PR comment embeds the image
+via Markdown (`![...](url)`), which compiles to a plain `<img src="...">`
+tag. Verified against real headless Chromium: an SVG with `foreignObject`
+labels loaded through an `<img>` tag renders the node boxes and edges but
+every label is blank — no error, no console warning, just empty rectangles.
+**Every flowchart ArchLens had generated before this fix would have posted
+with invisible text on GitHub itself.** Sequence diagrams were never
+affected (Mermaid renders those as plain SVG `<text>`). Fixed by setting
+`flowchart.htmlLabels: false` in `ARCHLENS_THEME_CONFIG` — confirmed via the
+same img-tag-in-real-Chromium test that real `<text>` elements now render
+correctly. `backend/tests/mermaid.test.ts` has a permanent regression test
+asserting rendered flowchart output never contains `foreignObject`.
+
+**The theme itself** is a dark palette derived from GitHub's own Primer
+design tokens (background `#0d1117`, node fill `#1c2128`, text `#e6edf3`,
+line `#8b949e`) so a diagram feels native to a PR page rather than a
+generic chart export, plus a system-font stack for legible text at GitHub's
+default zoom. Three fixed node categories give diagrams instant visual
+hierarchy instead of one undifferentiated color: `endpoint` (blue, routes/
+controllers), `logic` (green, services/business logic), `datastore` (purple,
+tables/schemas/queues). `backend/lib/llm.ts`'s prompt asks the model to
+group nodes into `subgraph` blocks by architectural layer (API/logic/data)
+and assign each node exactly one category via a `class` line — but
+**never** to define its own `classDef`. `backend/lib/mermaid.ts`'s
+`applyArchLensStyling()` strips any `classDef` the model emits anyway and
+appends ArchLens's own fixed one, so branding stays consistent regardless of
+what the model does and a model can't push arbitrary styling through. For
+sequence diagrams, the prompt asks for `autonumber` (so reviewers can
+reference "step 4" in a PR comment) and sparing `Note over` callouts on
+non-obvious side effects (external calls, DB writes, async jobs) — not one
+on every message, which would just be noise.
+
+**Deliberately not done (scope calls, not oversights):** no light-mode
+variant / GitHub `<picture>` + `prefers-color-scheme` adaptive image yet —
+that needs a second render + second Storage upload + `<picture>` markup in
+`action/src/comment.ts`, tracked as a follow-up, not built speculatively
+before it was asked for. No pivot to D2 or another diagram language — would
+mean rebuilding the security allow-list, prompt, and renderer from scratch
+for a look Mermaid's theming already gets most of the way to.
+
 ## Deployment topology (recommended, not required to run tests)
 
 - **`api/generate.ts`, `api/checkout.ts`, `api/webhook/stripe.ts`**: Vercel
@@ -113,7 +186,7 @@ Action makes to `/v1/generate`.
 
 ## Verified, not assumed
 
-`npm test` (53 tests across both workspaces) and `npm run dry-run` are both
+`npm test` (84 tests across both workspaces) and `npm run dry-run` are both
 green as of this writing. The dry run
 (`scripts/dry-run.ts`) is the important one: it runs the Action's real diff
 compression and HTTP client against the real backend handler over a real

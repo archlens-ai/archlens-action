@@ -23,6 +23,89 @@ const DISALLOWED_PATTERNS = [
 
 const MAX_SOURCE_LENGTH = 20_000;
 
+// ArchLens's visual identity: a GitHub-Primer-derived dark theme, chosen so
+// the diagram feels native to a GitHub PR page rather than a generic
+// chart-library export. `htmlLabels: false` is not a style choice — it is
+// a correctness fix. Mermaid v10+ defaults flowchart labels to HTML text
+// rendered inside <foreignObject>, and <foreignObject> HTML content does
+// not render in most browsers when the SVG is loaded through an <img> tag
+// (verified against real Chromium: an <img src="diagram.svg"> shows the
+// node boxes and edges but every single label is blank). That is exactly
+// how GitHub embeds a PR-comment image (`![...](url)` compiles to <img>),
+// so before this fix every flowchart ArchLens posted would have rendered
+// with invisible node text on GitHub itself. Sequence diagrams were never
+// affected — Mermaid renders sequence text as plain SVG <text>, not HTML.
+const FONT_STACK = "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, Roboto, sans-serif";
+
+export const ARCHLENS_THEME_CONFIG = {
+  theme: "base",
+  themeVariables: {
+    darkMode: true,
+    background: "#0d1117",
+    primaryColor: "#1c2128",
+    primaryTextColor: "#e6edf3",
+    primaryBorderColor: "#58a6ff",
+    lineColor: "#8b949e",
+    secondaryColor: "#161b22",
+    tertiaryColor: "#161b22",
+    fontFamily: FONT_STACK,
+    fontSize: "16px",
+    clusterBkg: "#161b22",
+    clusterBorder: "#30363d",
+    titleColor: "#e6edf3",
+    edgeLabelBackground: "#0d1117",
+    nodeTextColor: "#e6edf3",
+    actorBkg: "#1c2128",
+    actorBorder: "#58a6ff",
+    actorTextColor: "#e6edf3",
+    actorLineColor: "#30363d",
+    signalColor: "#e6edf3",
+    signalTextColor: "#e6edf3",
+  },
+  flowchart: { curve: "basis", padding: 16, htmlLabels: false },
+  sequence: {
+    actorFontFamily: FONT_STACK,
+    noteFontFamily: FONT_STACK,
+    messageFontFamily: FONT_STACK,
+  },
+  htmlLabels: false,
+} as const;
+
+// Fixed, server-owned category styling. The LLM is instructed (see
+// llm.ts's SYSTEM_PROMPT) to emit only `class NodeId,NodeId2 <category>`
+// references — never its own `classDef` — so ArchLens's palette stays
+// consistent across every diagram regardless of what the model does, and
+// so a model that ignores that instruction can't push arbitrary CSS-like
+// styling through. applyArchLensStyling() below strips any classDef lines
+// the model emits anyway and appends these instead.
+const CATEGORY_CLASS_DEFS = [
+  "classDef endpoint fill:#1c2128,stroke:#58a6ff,stroke-width:2px,color:#e6edf3",
+  "classDef logic fill:#1c2128,stroke:#7ee787,stroke-width:2px,color:#e6edf3",
+  "classDef datastore fill:#1c2128,stroke:#bc8cff,stroke-width:2px,color:#e6edf3",
+].join("\n");
+
+/**
+ * Applies ArchLens's fixed visual identity to already-validated Mermaid
+ * source: strips any `classDef` the model emitted (untrusted styling; the
+ * model should only reference the three fixed categories) and, for
+ * flowchart diagrams only, appends ArchLens's own classDef block so the
+ * `class NodeId <category>` lines the model was asked to emit actually
+ * render. A no-op for sequenceDiagram (classDef doesn't apply there).
+ */
+export function applyArchLensStyling(source: string): string {
+  const withoutModelClassDefs = source
+    .split("\n")
+    .filter((line) => !/^\s*classDef\b/.test(line))
+    .join("\n");
+
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(withoutModelClassDefs.trim());
+  if (!isFlowchart) {
+    return withoutModelClassDefs;
+  }
+
+  return `${withoutModelClassDefs.trimEnd()}\n\n${CATEGORY_CLASS_DEFS}\n`;
+}
+
 export interface ValidationResult {
   valid: boolean;
   error?: string;
@@ -87,9 +170,11 @@ export async function renderMermaidToSvg(
   const inputPath = join(dir, `${randomUUID()}.mmd`);
   const outputPath = join(dir, `${randomUUID()}.svg`);
   const puppeteerConfigPath = join(dir, "puppeteer-config.json");
+  const themeConfigPath = join(dir, "theme-config.json");
 
   try {
-    await writeFile(inputPath, source, "utf8");
+    await writeFile(inputPath, applyArchLensStyling(source), "utf8");
+    await writeFile(themeConfigPath, JSON.stringify(ARCHLENS_THEME_CONFIG), "utf8");
     // --no-sandbox is required to run headless Chromium as root/in most
     // containerized CI and serverless environments.
     await writeFile(
@@ -108,6 +193,8 @@ export async function renderMermaidToSvg(
       outputPath,
       "-b",
       "transparent",
+      "-c",
+      themeConfigPath,
       "-p",
       puppeteerConfigPath,
     ], timeoutMs);
