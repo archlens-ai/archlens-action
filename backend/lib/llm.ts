@@ -80,7 +80,7 @@ architecture map or just a scatter of boxes, so follow it closely:
   glance, the sequence-diagram equivalent of the endpoint/logic/datastore
   split. **Also show diff-awareness here, the same way flowchart does**:
   wrap the message exchanges that are genuinely new in this PR in
-  \`rect rgba(88, 166, 255, 0.08)\` ... \`end\` (exact color, so every
+  \`rect rgba(88, 166, 255, 0.18)\` ... \`end\` (exact color, so every
   diagram's "new" highlight matches) — leave pre-existing call flow the
   diff doesn't touch outside any rect block. If the whole exchange is new,
   wrap the entire sequence; if only part of it is new (e.g. an existing
