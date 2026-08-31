@@ -320,3 +320,77 @@ Both changes are real fixes, not label changes — verified against a real
 mmdc render (`stroke-dasharray:none` present, `background-color:` no
 longer `transparent`) and against the actual visible screenshots, not
 assumed from the code alone.
+
+## 12. Screenshot-tooling padding bug fixed, then a real-external-repo test found the classifier had never actually been tested outside its own fixtures (2026-08-31)
+
+Two separate things happened back to back, both worth keeping distinct.
+
+**First, a fix to my own test tooling, not the product.** Anurag flagged
+the demo images as "big dull page where most of the part is empty white."
+Root cause: `scripts/screenshot-svg.mjs` and `scripts/capture-flow-gif.mjs`
+were taking `fullPage`/plain page screenshots inside a fixed-height
+Puppeteer viewport. Puppeteer's screenshot captures
+`max(viewport height, content height)` — so any diagram shorter than the
+fixed viewport got padded with blank space below it (e.g. the
+scale-stress-test PNG: an 800x1200 canvas for ~460px of actual content).
+GitHub itself never does this — it displays a posted image at its natural
+size. Fixed both scripts to screenshot the diagram's own container element
+instead of the page. Re-verified: same SVG now screenshots at 768x467,
+tight to the content.
+
+**Second, and much bigger: Anurag asked to pull real, complex repos from
+GitHub and see how ArchLens actually handles them.** Built
+`scripts/dry-run-real-repo.ts` to run the real production pipeline against
+an arbitrary real commit in an arbitrary local clone. Picked one real
+historical commit each from `tiangolo/full-stack-fastapi-template`
+(Python/FastAPI) and `brocoders/nestjs-boilerplate` (NestJS/TypeScript) —
+neither written by us, neither tuned for.
+
+**Both diagrams collapsed almost completely: nearly every node came back
+"Context" (nothing changed here) despite every file in both diffs being
+genuinely part of the real PR.** This is a bigger, more damaging bug than
+Round 3's ("the model marks everything changed") — a real PR rendering as
+"nothing here is new" silently defeats the entire product pitch on first
+contact with real code, and it never surfaced before because every fixture
+`diff-classify.ts` had ever been tested against, including the 10-file
+stress test, was written by me and happened to use a single-word-camelCase
+file-naming style that coincidentally matched its own PascalCase diagram
+labels after lowercasing. Two real, distinct root causes: (1)
+`DEFINITION_PATTERNS` only knew JavaScript's `function` keyword, not
+Python's `def`; (2) the tokenizer's single extraction pass normalized a
+dot-separated basename (`auth.controller` → two tokens) and a PascalCase
+label with no separators (`AuthController` → one token) into shapes that
+could never match each other.
+
+Fixed in `backend/lib/diff-classify.ts`: added Python `def`/Go `func` to
+the definition patterns, and made `tokenize()` also decompose
+camelCase/PascalCase boundaries (additive union with the original pass, so
+nothing that matched before stops matching). Re-running the fix against
+both real repos immediately caught a NEW real false positive it
+introduced: `GoogleService`, untouched by the NestJS diff, got promoted to
+"changed" purely because it shares the generic word-piece "service" with
+an unrelated file (`auth.service.ts`) that did change — splitting
+camelCase makes generic-suffix collisions like this more likely. Fixed
+with a second word list (`ARCHITECTURAL_SUFFIX_WORDS`) that's only dropped
+when something more specific survives alongside it for that identifier, so
+a file whose entire basename IS a generic word (`models.py`) doesn't lose
+100% of its signal either. Re-verified against both real repos again after
+this second fix: full convergence on NestJS (8/8 genuinely-changed nodes
+correctly changed, the one genuinely-unrelated node correctly Context);
+6-8/10 on FastAPI (a known, disclosed remaining gap — see the project doc
+— around definition lines the diff itself never touches, combined with
+singular/plural label-vs-basename mismatches; not attempted this round,
+stemming and bare-class-method detection are both real scope, not a quick
+add).
+
+Added 6 new tests, one per specific real failure found, not generic
+padding. 105/105 backend tests pass, 123/123 total. Full writeup, with the
+before/after evidence and the concrete node-by-node counts, is in the
+Project doc (`claude/architecture-and-scoping.md`) under "Real-external-
+repo validation" — kept there rather than only here since it's a durable
+product finding, not a session note.
+
+**The standing lesson for whoever touches this classifier next:** a fix
+verified only against fixtures the same session wrote is not verified.
+Re-run `scripts/dry-run-real-repo.ts` against a real external repo before
+calling any future diff-classify change done.
