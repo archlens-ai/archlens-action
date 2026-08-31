@@ -34,7 +34,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/html" });
     res.end(
       `<!doctype html><html><body style="margin:0;background:#ffffff">` +
-        `<div style="width:${GITHUB_COMMENT_WIDTH}px;padding:16px;box-sizing:border-box;background:#ffffff">` +
+        `<div id="frame" style="width:${GITHUB_COMMENT_WIDTH}px;padding:16px;box-sizing:border-box;background:#ffffff;display:inline-block">` +
         `<img id="img" src="/diagram.svg" style="max-width:100%;display:block">` +
         `</div></body></html>`
     );
@@ -50,7 +50,7 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox"],
 });
 const page = await browser.newPage();
-await page.setViewport({ width: GITHUB_COMMENT_WIDTH + 32, height: 1200 });
+await page.setViewport({ width: GITHUB_COMMENT_WIDTH + 32, height: 800 });
 await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle0" });
 await page.waitForFunction(() => {
   const img = document.getElementById("img");
@@ -66,7 +66,18 @@ const box = await page.evaluate(() => {
     renderedHeight: rect.height,
   };
 });
-await page.screenshot({ path: outPngPath, fullPage: true });
+
+// Bug fixed here (2026-08-31): the previous version took a fixed-viewport
+// `fullPage: true` screenshot, which captures max(viewport height, content
+// height) — for any diagram shorter than the viewport, that pads the image
+// with a huge block of blank page below the actual content (exactly the
+// "big dull page, mostly empty white" the user flagged). GitHub itself
+// never does this — it just displays the image at its own natural size.
+// Screenshotting the specific container element instead crops exactly to
+// its real rendered bounding box, no matter how tall or short it is.
+const frame = await page.$("#frame");
+await frame.screenshot({ path: outPngPath });
+
 await browser.close();
 server.close();
 console.log(

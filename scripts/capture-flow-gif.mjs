@@ -23,7 +23,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/html" });
     res.end(
       `<!doctype html><html><body style="margin:0;background:#ffffff">` +
-        `<div style="width:${WIDTH}px;padding:16px;box-sizing:border-box;background:#ffffff">` +
+        `<div id="frame" style="width:${WIDTH}px;padding:16px;box-sizing:border-box;background:#ffffff;display:inline-block">` +
         `<img id="img" src="/diagram.svg" style="max-width:100%;display:block">` +
         `</div></body></html>`
     );
@@ -43,8 +43,12 @@ await page.waitForFunction(() => {
   return img && img.complete && img.naturalWidth > 0;
 });
 
+// Same fix as screenshot-svg.mjs: screenshot the #frame element itself
+// rather than the fixed-size viewport/page, so short diagrams don't get
+// padded with blank space below them in every frame.
+const frame = await page.$("#frame");
 for (let i = 0; i < frameCount; i++) {
-  await page.screenshot({ path: `${outDir}/frame-${String(i).padStart(3, "0")}.png` });
+  await frame.screenshot({ path: `${outDir}/frame-${String(i).padStart(3, "0")}.png` });
   await new Promise((r) => setTimeout(r, intervalMs));
 }
 
