@@ -95,6 +95,28 @@ describe("computeDiffTouchState", () => {
     expect(changed.has("auth")).toBe(true);
   });
 
+  it("matches a singular diagram label against a plural file basename (real bug: 'UpdateUser' vs users.py, where the def line itself wasn't touched by the diff)", () => {
+    // Reproduces the exact FastAPI shape: `def update_user(...)` is
+    // unchanged context in the diff -- only an inner parameter's type
+    // changed -- so there's no definition-pattern evidence at all, only
+    // the basename fallback, which used to fail purely on items/item.
+    const files: DiffPatchFile[] = [
+      { filename: "app/api/routes/users.py", status: "modified", patch: "+    user_id: uuid.UUID," },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("user")).toBe(true);
+  });
+
+  it("de-pluralizes an -ies / -es ending too, not just a plain trailing s", () => {
+    const files: DiffPatchFile[] = [
+      { filename: "app/categories.py", status: "modified", patch: "+x = 1" },
+      { filename: "app/boxes.py", status: "added", patch: "+y = 2" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("category")).toBe(true);
+    expect(changed.has("box")).toBe(true);
+  });
+
   it("keeps a generic architectural word as fallback evidence when it's the ENTIRE basename, rather than dropping it to zero signal", () => {
     // A file literally named models.py (common in Django/FastAPI/Flask
     // apps) has no other identifying word in its basename at all -- unlike

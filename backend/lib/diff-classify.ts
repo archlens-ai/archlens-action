@@ -113,6 +113,32 @@ const ARCHITECTURAL_SUFFIX_WORDS = new Set([
  * code," exactly the failure mode this module was built to prevent, just
  * approached from the opposite direction.
  */
+/**
+ * Naive English de-pluralization, not a real stemmer — deliberately just
+ * covers the common regular cases (items -> item, categories -> category,
+ * boxes -> box) that make up the overwhelming majority of real
+ * file/module basenames (routes.py vs a "Route" node, models.py vs a
+ * "UserModel" node, users.py vs an "UpdateUser" node). Real gap found by
+ * testing against tiangolo/full-stack-fastapi-template: a genuinely
+ * modified `update_user(...)` whose OWN definition line wasn't touched by
+ * the diff (only an inner parameter's type was) had no definition-pattern
+ * evidence at all, so it depended entirely on the basename fallback —
+ * which failed purely because "user" (singular, from the label) and
+ * "users" (plural, from users.py) never compared equal. Only ever adds
+ * tokens (called from within tokenize(), which unions everything and
+ * filters after), so it can create a new match but can never remove one
+ * that already worked. Can occasionally mis-stem an irregular word ending
+ * in a single non-doubled "s" that isn't actually plural (status ->
+ * "statu", bonus -> "bonu") — accepted: worst case is a made-up token
+ * that matches nothing, not a wrong match, since it's purely additive.
+ */
+function singularize(word: string): string | null {
+  if (word.length > 5 && word.endsWith("ies")) return `${word.slice(0, -3)}y`; // categories -> category
+  if (word.length > 4 && /(?:s|x|z|ch|sh)es$/.test(word)) return word.slice(0, -2); // boxes -> box, classes -> class
+  if (word.length > 4 && word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1); // items -> item
+  return null;
+}
+
 function tokenize(text: string): string[] {
   const wholeWordTokens = text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) ?? [];
 
@@ -123,7 +149,13 @@ function tokenize(text: string): string[] {
     .toLowerCase();
   const splitTokens = decomposed.match(/[a-z][a-z0-9]{2,}/g) ?? [];
 
-  const all = [...new Set([...wholeWordTokens, ...splitTokens])].filter((t) => !STOPWORDS.has(t));
+  const base = new Set([...wholeWordTokens, ...splitTokens]);
+  for (const t of [...base]) {
+    const singular = singularize(t);
+    if (singular) base.add(singular);
+  }
+
+  const all = [...base].filter((t) => !STOPWORDS.has(t));
 
   const specific = all.filter((t) => !ARCHITECTURAL_SUFFIX_WORDS.has(t));
   // If something more specific survived, drop the generic layer-suffix
