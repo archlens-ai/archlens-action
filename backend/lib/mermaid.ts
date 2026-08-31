@@ -44,7 +44,14 @@ export const ARCHLENS_THEME_CONFIG = {
     primaryColor: "#1c2128",
     primaryTextColor: "#e6edf3",
     primaryBorderColor: "#58a6ff",
-    lineColor: "#8b949e",
+    // Round-5 fix, direct user feedback ("keep entire background dark...
+    // make the text and line bright and bold, so its clearly visible"):
+    // the previous muted gray-blue (#8b949e) read as washed out against
+    // the near-black background. Bumped to GitHub's own bright accent
+    // blue so connecting lines and arrowheads (which inherit lineColor)
+    // actually pop — applyBoldGlowStyling() below layers a stroke-width
+    // bump and a glow filter on top of this in the rendered SVG.
+    lineColor: "#79c0ff",
     secondaryColor: "#161b22",
     tertiaryColor: "#161b22",
     fontFamily: FONT_STACK,
@@ -102,16 +109,20 @@ export const ARCHLENS_THEME_CONFIG = {
 // diff's impact. Each category now has a "Context" variant (dashed
 // border, dimmed fill) for nodes that are referenced but not
 // added/modified by the diff; the plain (solid, full-color) variant is
-// reserved for nodes the diff actually changes. Region variants (subtle
-// tinted subgraph fills, one hue per layer) replace the old flat
-// clusterBkg so grouped layers read as instantly distinct regions rather
-// than text labels inside thin outlines.
+// reserved for nodes the diff actually changes.
 // Round-3 addition, from a second review: refactors and outright removals
 // are a routine PR category for this product's own target audience
 // (backend/DevOps leads), and there was no way to show "this PR deletes
 // X" — only changed/context. A single generic `removed` category (not
 // split per endpoint/logic/datastore — once something's gone, which
 // category it used to be matters less than the fact it's gone) covers it.
+// Round-5 fix, direct user feedback ("its bit messy, keep entire
+// background dark blue or github black"): the three Region classDefs
+// used to each tint their subgraph a different hue (navy/green/purple),
+// which read as a patchwork rather than one coherent dark canvas. They
+// now share one identical, background-matching fill — the subgraph
+// boundary is still visible (a neutral border + its label), but the
+// canvas itself stays uniformly dark everywhere, per the ask.
 const CATEGORY_CLASS_DEFS = [
   "classDef endpoint fill:#1c2128,stroke:#58a6ff,stroke-width:2px,color:#e6edf3",
   "classDef logic fill:#1c2128,stroke:#7ee787,stroke-width:2px,color:#e6edf3",
@@ -119,9 +130,9 @@ const CATEGORY_CLASS_DEFS = [
   "classDef endpointContext fill:#161b22,stroke:#58a6ff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef logicContext fill:#161b22,stroke:#7ee787,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef datastoreContext fill:#161b22,stroke:#bc8cff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
-  "classDef endpointRegion fill:#12202e,stroke:#1c2128,color:#e6edf3",
-  "classDef logicRegion fill:#122417,stroke:#1c2128,color:#e6edf3",
-  "classDef datastoreRegion fill:#1c1a2e,stroke:#1c2128,color:#e6edf3",
+  "classDef endpointRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
+  "classDef logicRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
+  "classDef datastoreRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
   "classDef removed fill:#2d1a1f,stroke:#f85149,stroke-width:1.5px,stroke-dasharray:2 2,color:#ffa198",
 ].join("\n");
 
@@ -294,6 +305,85 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
   return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);
 }
 
+// Only matches a plain, unlabeled-or-labeled directed edge line the model
+// emits in its usual shape ("A --> B" / "A -->|label| B" / dotted/thick
+// variants) that doesn't already carry an edge id — a line already
+// rewritten (or one this doesn't recognize) is left alone rather than
+// risking corrupting it.
+const EDGE_LINE_RE =
+  /^(\s*)([A-Za-z_]\w*)\s*(-->|-\.->|==>)\s*(\|[^|]*\|)?\s*([A-Za-z_]\w*)\s*$/;
+
+/**
+ * User ask (2026-08-31): "add dynamic glowing arrow to show direction of
+ * data flow." Rather than trust the LLM to emit Mermaid's edge-id +
+ * `animate: true` syntax reliably (the project's own diff-classify.ts
+ * exists specifically because LLM instruction-following degrades under
+ * complexity), this rewrites every plain directed edge the model emits
+ * into an animated one deterministically, in code: `A --> B` becomes
+ * `A archFlow1@--> B` plus an appended `archFlow1@{ animate: true }`
+ * directive. Confirmed against a real mmdc render that this produces a
+ * genuine moving-dash animation along the edge (Mermaid's built-in
+ * `edge-animation-fast` CSS class), not a no-op. Flowchart-only — this
+ * edge-id syntax doesn't apply to sequenceDiagram's message-arrow syntax.
+ */
+export function injectEdgeFlowAnimation(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  let counter = 0;
+  const animateDirectives: string[] = [];
+
+  const rewritten = source
+    .split("\n")
+    .map((line) => {
+      const match = EDGE_LINE_RE.exec(line);
+      if (!match) return line;
+      const [, indent, sourceId, arrow, label, targetId] = match;
+      counter += 1;
+      const edgeId = `archFlow${counter}`;
+      animateDirectives.push(`${edgeId}@{ animate: true }`);
+      return `${indent}${sourceId} ${edgeId}@${arrow}${label ?? ""} ${targetId}`;
+    })
+    .join("\n");
+
+  if (animateDirectives.length === 0) {
+    return source; // nothing matched (e.g. no edges, or an unrecognized shape) — don't touch it
+  }
+
+  return `${rewritten.trimEnd()}\n${animateDirectives.join("\n")}\n`;
+}
+
+// A single reusable glow filter, injected once per rendered SVG. Applied
+// via CSS (below) to edge/message-line paths only — never to text or node
+// fill areas, since blurring those would make labels illegible rather than
+// "bold and bright."
+const GLOW_FILTER_ID = "archlens-glow";
+const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.4" result="archlens-blur"/><feMerge><feMergeNode in="archlens-blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
+
+/**
+ * User ask (2026-08-31): "make the text and line bright and bold... clearly
+ * visible", plus the glow half of the animated-flow request. mmdc's stock
+ * stylesheet ships edges at a flat 1px (flowchart) / 1.5px (sequence) with
+ * no glow — this overrides both with `!important` (simplest reliable way to
+ * beat rules already baked into the SVG's own embedded <style>, since we
+ * don't control mmdc's stylesheet generation directly) and forces bold text
+ * throughout. Applies to both diagram types; the moving-dash animation
+ * itself (injectEdgeFlowAnimation, above) is flowchart-only.
+ */
+export function applyBoldGlowStyling(svg: string): string {
+  const overrideStyle =
+    `<style>` +
+    `text{font-weight:700 !important;}` +
+    `.flowchart-link{stroke-width:2.5px !important;filter:url(#${GLOW_FILTER_ID});}` +
+    `.messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#${GLOW_FILTER_ID});}` +
+    `.edgeLabel{font-weight:700 !important;}` +
+    `</style>`;
+
+  return svg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
+}
+
 function escapeXml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -365,7 +455,7 @@ export async function renderMermaidToSvg(
   const themeConfigPath = join(dir, "theme-config.json");
 
   try {
-    await writeFile(inputPath, applyArchLensStyling(source), "utf8");
+    await writeFile(inputPath, applyArchLensStyling(injectEdgeFlowAnimation(source)), "utf8");
     await writeFile(themeConfigPath, JSON.stringify(ARCHLENS_THEME_CONFIG), "utf8");
     // --no-sandbox is required to run headless Chromium as root/in most
     // containerized CI and serverless environments.
@@ -393,7 +483,7 @@ export async function renderMermaidToSvg(
 
     const rawSvg = await readFile(outputPath, "utf8");
     const diagramType = /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
-    return { svg: appendLegend(rawSvg, diagramType) };
+    return { svg: appendLegend(applyBoldGlowStyling(rawSvg), diagramType) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

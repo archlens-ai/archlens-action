@@ -221,3 +221,70 @@ first.
   `.github/workflows/ci.yml`.
 - No `gh` CLI in the sandbox — repo creation/push needs to happen from a
   session with GitHub auth (or the user's own machine).
+
+## 9. Adversarial review loop, round 4 (2026-08-31) — classification fixed, layout is the remaining blocker
+
+Anurag's instruction: run a fresh, context-free subagent as a harsh
+reviewer against ArchLens's own product brief after each visual-quality
+change, and iterate until 9.5+. Full score trajectory and reasoning:
+`claude/architecture-and-scoping.md`'s "Adversarial review loop" section
+(also mirrored in the Claude Project). Short version: 4.2 → 6.0 → 4.3 (a
+deliberate regression once graded against a realistic 10-file diff instead
+of toy examples, which exposed two real structural problems) → **6.0,
+this round, on the hard test** — a genuine improvement, not just a bounce
+back, because:
+
+- `backend/lib/diff-classify.ts` (new) fixes the diff-classification
+  collapse deterministically, in code, rather than trusting the LLM.
+  Verified against the real 10-file stress test by reading the raw
+  generated Mermaid `class` lines directly.
+- A COARSE MODE prompt switch (llm.ts, triggered by `files.length`, not
+  the model) and a modest `nodeSpacing`/`rankSpacing` bump partially
+  mitigate — but do NOT fix — Mermaid/dagre's layout breakdown at scale
+  (edges crossing through nodes, subgraph containment failing). Round 4's
+  reviewer still would not approve shipping the stress-test-scale diagram
+  as-is because of this.
+
+**Real remaining lever to reach 9.5+, not more prompt/theme iteration:**
+either build a custom Puppeteer render harness using Mermaid's ELK layout
+engine (`@mermaid-js/layout-elk` isn't bundled with the `mmdc` install used
+here — confirmed by checking its node_modules — so this replaces the
+stock `mmdc` render step, it's not a config flag), or, more cheaply, drop
+subgraph nesting entirely above the coarse-mode threshold as a disclosed
+downgrade for large diagrams. This is a real decision point for Anurag,
+not something to keep grinding on unprompted.
+
+## 10. Direct visual-polish feedback (2026-08-31) — uniform dark canvas, bold/glow, animated flow arrows
+
+Anurag's feedback on the round-4 output, verbatim: "its bit messy, keep
+entire background dark blue or github black and make the text and line
+bright and bold... if you can add dinamic glowing arrow to so direction of
+data flow that would awesome." Not a scoring-loop round — direct aesthetic
+iteration. Three changes, all in `backend/lib/mermaid.ts`:
+
+- The three `*Region` classDefs (subgraph tints) previously used a
+  different hue per layer (navy/green/purple), which read as a patchwork.
+  Unified to one identical background-matching fill — the canvas is now
+  uniformly dark everywhere; subgraphs are still delineated by a neutral
+  border + label, not by a fill color.
+- `lineColor` theme variable bumped from a muted gray (`#8b949e`) to a
+  bright accent blue (`#79c0ff`), and a new `applyBoldGlowStyling()`
+  post-processing pass forces bold text and thicker, glowing edge/message
+  lines via an injected `<style>` override + SVG glow filter (`mmdc`'s
+  stock stylesheet ships 1px/1.5px lines with no glow and isn't otherwise
+  themeable for stroke-width).
+- `injectEdgeFlowAnimation()` (new) deterministically rewrites every plain
+  edge the model emits into Mermaid's own edge-id + `animate: true` syntax
+  — a genuine moving-dash CSS animation confirmed against a real render
+  (`edge-animation-fast` class, a real `@keyframes` animation), not
+  something invented for this session. Done in code rather than asked of
+  the LLM, consistent with this project's now-established rule of not
+  trusting the model for anything code can just compute directly.
+  Flowchart-only (sequence diagrams' arrow syntax doesn't support edge
+  ids); sequence lines still get the bold/glow treatment, just not the
+  motion.
+
+A static PNG can't show the animation — proved it's real with
+`scripts/capture-flow-gif.mjs` (captures a burst of real rendered frames)
+assembled into a GIF, and diffed two frames pixel-by-pixel to confirm they
+actually differ before calling it done. Tests: 91 → 100 backend.
