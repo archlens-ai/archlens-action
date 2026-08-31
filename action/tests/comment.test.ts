@@ -52,6 +52,38 @@ describe("buildCommentBody", () => {
     });
     expect(body).not.toContain("PR #");
   });
+
+  // Disclosed-simplification note, added alongside the coarse-mode prompt
+  // switch (llm.ts) and the deterministic diff-classification fix
+  // (diff-classify.ts) that came out of the harsh-review loop finding the
+  // diagram unreadable past ~10 files — a reviewer should know a big
+  // diagram is simplified by design, not silently missing detail.
+  it("includes a simplification note once matched files pass the complexity threshold", () => {
+    const body = buildCommentBody({
+      svgUrl: "https://cdn.archlens.dev/abc123.svg",
+      mermaidSource: "flowchart TD\n  A --> B",
+      diagramType: "flowchart",
+      truncated: false,
+      repoFullName: "acme/widgets",
+      prNumber: 512,
+      filesMatched: 10,
+    });
+    expect(body).toContain("10 files");
+    expect(body).toContain("file/module level");
+  });
+
+  it("omits the simplification note for a small diff", () => {
+    const body = buildCommentBody({
+      svgUrl: "https://cdn.archlens.dev/abc123.svg",
+      mermaidSource: "flowchart TD\n  A --> B",
+      diagramType: "flowchart",
+      truncated: false,
+      repoFullName: "acme/widgets",
+      prNumber: 512,
+      filesMatched: 3,
+    });
+    expect(body).not.toContain("file/module level");
+  });
 });
 
 function makeFakeOctokit(existingComments: Array<{ id: number; body: string }>) {

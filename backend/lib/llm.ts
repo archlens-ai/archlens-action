@@ -89,17 +89,34 @@ architecture map or just a scatter of boxes, so follow it closely:
   (an external API call, a DB write, an async job) — not on every message,
   at most 2-3 notes total.`;
 
+// Past this many matched files, Mermaid's own dagre layout engine starts
+// crossing edges through unrelated nodes and losing subgraph containment —
+// a confirmed, unresolved limitation (see CLAUDE.md item 8/9), not fixed
+// by this prompt switch alone. Asking for fewer, coarser nodes reduces how
+// often the diagram actually hits that node/edge count, which is a real
+// mitigation even though it doesn't touch the layout engine itself — and
+// unlike the diagram's content, THIS decision is made in code from a
+// number we already have (files.length), not left to the model to notice
+// and self-regulate.
+const COARSE_MODE_THRESHOLD = 6;
+const COARSE_MODE_MAX_NODES = 12;
+
 export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): string {
   const hint =
     diagramType === "auto"
       ? ""
       : `\nUse diagram type: ${diagramType === "sequence" ? "sequenceDiagram" : "flowchart TD"}.\n`;
 
+  const coarseModeHint =
+    files.length > COARSE_MODE_THRESHOLD
+      ? `\nCOARSE MODE — this diff touches ${files.length} files, too many for a legible one-node-per-function diagram. Represent one node per FILE or logical module (e.g. "OrdersController", "RefundService"), not one per function/route inside it — fold a file's functions into a single node and let its category reflect the file's dominant role. Merge closely-related files in the same directory into one combined node if that keeps things clearer. Keep the total node count at or under ${COARSE_MODE_MAX_NODES} even if that means grouping further. This applies to flowchart diagrams; for a sequenceDiagram, keep participants at the service level for the same reason.\n`
+      : "";
+
   const fileBlocks = files
     .map((f) => `### ${f.filename} (${f.status})\n${f.patch}`)
     .join("\n\n");
 
-  return `${hint}\nCompressed diff (${files.length} file(s)):\n\n${fileBlocks}`;
+  return `${hint}${coarseModeHint}\nCompressed diff (${files.length} file(s)):\n\n${fileBlocks}`;
 }
 
 /**

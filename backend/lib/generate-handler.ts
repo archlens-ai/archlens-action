@@ -1,5 +1,6 @@
 import { buildPrompt, buildRepairPrompt, type DiffFile, type DiagramTypeHint, type LlmProvider } from "./llm.js";
 import { validateMermaidSyntax } from "./mermaid.js";
+import { reconcileDiffClassification } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
 
@@ -104,6 +105,13 @@ export async function handleGenerateRequest(
         );
       }
     }
+
+    // Deterministic override, not another LLM-trusting step: recompute
+    // changed/Context/removed from the diff's own +/- lines rather than
+    // the model's guess — see diff-classify.ts for why this exists (a
+    // real, reviewer-caught, self-verified failure mode where the model
+    // marked every node "changed" on a realistic diff).
+    mermaidSource = reconcileDiffClassification(mermaidSource, body.files);
 
     const { svg } = await deps.render(mermaidSource);
     const svgUrl = await deps.storeSvg(hash, svg);

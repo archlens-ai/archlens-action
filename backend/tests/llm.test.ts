@@ -25,6 +25,30 @@ describe("buildPrompt", () => {
     );
     expect(prompt).not.toContain("Use diagram type");
   });
+
+  // Added after a harsh-review loop found the LLM's diagrams become
+  // unreadable (edges crossing nodes, subgraph containment breaking) past
+  // ~10-14 nodes on realistic multi-file PRs. The trigger for asking the
+  // model to switch to a coarser view is computed in code from
+  // files.length, not left for the model to notice on its own.
+  it("switches to COARSE MODE once the file count passes the threshold", () => {
+    const manyFiles = Array.from({ length: 7 }, (_, i) => ({
+      filename: `src/services/service${i}.ts`,
+      status: "modified",
+      patch: `+export function handle${i}() {}`,
+    }));
+    const prompt = buildPrompt(manyFiles, "auto");
+    expect(prompt).toContain("COARSE MODE");
+    expect(prompt).toContain("7 files");
+  });
+
+  it("does not mention COARSE MODE for a small diff", () => {
+    const prompt = buildPrompt(
+      [{ filename: "a.ts", status: "modified", patch: "+export function a() {}" }],
+      "auto"
+    );
+    expect(prompt).not.toContain("COARSE MODE");
+  });
 });
 
 describe("buildRepairPrompt", () => {

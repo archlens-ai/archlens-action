@@ -69,7 +69,16 @@ export const ARCHLENS_THEME_CONFIG = {
     noteBorderColor: "#d29922",
     noteTextColor: "#e6edf3",
   },
-  flowchart: { curve: "basis", padding: 16, htmlLabels: false },
+  // nodeSpacing/rankSpacing bumped modestly above dagre's defaults (50/50).
+  // Tested directly against the 14-node/18-edge stress case that exposed
+  // Mermaid's layout limitations: this softens crowding but does NOT fix
+  // edges crossing through unrelated nodes or cross-subgraph containment —
+  // those are structural to how dagre lays out subgraphs with cross-cutting
+  // edges, not a spacing problem. Kept anyway since it's a strict
+  // improvement with no downside; the real mitigation for scale is the
+  // LLM's coarse-mode node-count cap (see llm.ts's COARSE_MODE_THRESHOLD),
+  // not this.
+  flowchart: { curve: "basis", padding: 16, htmlLabels: false, nodeSpacing: 45, rankSpacing: 65 },
   sequence: {
     actorFontFamily: FONT_STACK,
     noteFontFamily: FONT_STACK,
