@@ -394,3 +394,30 @@ product finding, not a session note.
 verified only against fixtures the same session wrote is not verified.
 Re-run `scripts/dry-run-real-repo.ts` against a real external repo before
 calling any future diff-classify change done.
+
+## 13. The classification gap from item 12 is resolved (2026-08-31, same day)
+
+Root cause turned out to be one thing: a singular/plural mismatch between
+a diagram label ("UpdateUser") and its file's basename (users.py) was
+blocking the basename fallback even in cases that had nothing to do with
+the "definition line itself untouched" half of the problem. Added a
+deliberately narrow `singularize()` in `backend/lib/diff-classify.ts`
+(items -> item, categories -> category, boxes -> box — common regular
+English plurals, not a real stemmer), folded additively into the existing
+tokenizer so it can only ever add a new match, never remove one that
+already worked.
+
+Re-verified against both real repos again — NestJS unchanged at 8/8
+correct, FastAPI up to a stable 8/10 across three repeated real-API calls
+(checked for run-to-run stability, not just one lucky run). The two nodes
+still showing Context are both legitimately correct: one isn't in the
+diffed files at all, the other corresponds to a class whose own
+declaration line the diff never touches, with zero identifying token
+anywhere in the diff's changed lines — a genuine limit of line-level
+diffing, not a bug. 107/107 backend tests, 125/125 total. Full writeup in
+the Project doc.
+
+Remaining open item from this whole line of work: the layout-at-scale
+decision (ELK harness vs. flat-layout fallback, see item 9) is now the
+only unresolved lever on review score from the classifier/layout side of
+the product.
