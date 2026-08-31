@@ -50,6 +50,64 @@ describe("computeDiffTouchState", () => {
     expect(changed.has("table")).toBe(false);
     expect(changed.has("create")).toBe(false);
   });
+
+  it("ties a dot-separated file basename to a PascalCase node label sharing no single-token match (real bug: NestJS-style auth.controller.ts vs 'AuthController')", () => {
+    // Found running a REAL external repo (nestjs-boilerplate) through the
+    // full pipeline: the old tokenizer reduced "AuthController" to one
+    // blob "authcontroller" and "auth.controller" (the file's basename)
+    // to two pieces "auth"/"controller" -- never equal, so a genuinely
+    // modified controller file always fell back to Context.
+    const files: DiffPatchFile[] = [
+      { filename: "src/auth/auth.controller.ts", status: "modified", patch: "+  @Get('me')" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    // "controller" itself is deliberately excluded as a generic
+    // architectural-layer suffix (see the STOPWORDS comment) -- "auth" is
+    // the part that actually identifies this file, and it's what a
+    // PascalCase "AuthController" label needs to overlap on.
+    expect(changed.has("auth")).toBe(true);
+  });
+
+  it("matches a Python 'def' definition against its diagram label (real bug: FastAPI 'def read_item' never recognized as a definition at all)", () => {
+    const files: DiffPatchFile[] = [
+      { filename: "app/api/routes/items.py", status: "modified", patch: "+def read_item(session: SessionDep, id: uuid.UUID) -> Any:" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("read_item")).toBe(true);
+    expect(changed.has("read")).toBe(true);
+    expect(changed.has("item")).toBe(true);
+  });
+
+  it("matches a Go 'func' definition, including one with a method receiver", () => {
+    const files: DiffPatchFile[] = [
+      { filename: "orders.go", status: "modified", patch: "+func (s *OrderService) CancelOrder(id string) error {" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("cancelorder")).toBe(true);
+  });
+
+  it("does not treat a generic architectural suffix ('Service'/'Controller'/...) as identifying evidence on its own (real false-positive found on nestjs-boilerplate: 'GoogleService', never touched by the diff, matched only because 'auth.service.ts' also changed)", () => {
+    const files: DiffPatchFile[] = [
+      { filename: "src/auth/auth.service.ts", status: "modified", patch: "+  private readonly foo = 1;" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("service")).toBe(false);
+    expect(changed.has("auth")).toBe(true);
+  });
+
+  it("keeps a generic architectural word as fallback evidence when it's the ENTIRE basename, rather than dropping it to zero signal", () => {
+    // A file literally named models.py (common in Django/FastAPI/Flask
+    // apps) has no other identifying word in its basename at all -- unlike
+    // "auth.service.ts", there's no more-specific token to prefer instead,
+    // so dropping "models" here would leave the file with zero fallback
+    // evidence, which is worse than the rare coincidental collision this
+    // stopword list exists to prevent.
+    const files: DiffPatchFile[] = [
+      { filename: "backend/app/models.py", status: "modified", patch: "+    hashed_password: str" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("models")).toBe(true);
+  });
 });
 
 describe("reconcileDiffClassification", () => {

@@ -66,9 +66,72 @@ const STOPWORDS = new Set([
   "type", "types", "int", "text", "true", "false",
 ]);
 
+// Architectural-layer suffixes that show up in nearly every file name and
+// class name in nearly every codebase (AuthService, UsersController,
+// ItemModel...) once camelCase/dot-case decomposition splits them out as
+// their own token (see tokenize() below). Real bug found on a REAL external
+// repo: "GoogleService (context)" -- a service the diff never touched --
+// was wrongly promoted from Context to "changed" because it shares the
+// generic word-piece "service" with an unrelated file that genuinely did
+// change (auth.service.ts). These words carry the layer, not the identity.
+//
+// Kept separate from STOPWORDS (rather than merged in) because they're only
+// noise when they ride along with something more specific: "auth.service"
+// should drop "service" and match on "auth" alone, but a file whose ENTIRE
+// basename is one of these words ("models.py", "utils.py") would otherwise
+// lose 100% of its fallback signal -- worse than the collision it's meant
+// to prevent. tokenize() below only drops these when at least one other,
+// more specific token survives alongside them for that same identifier.
+const ARCHITECTURAL_SUFFIX_WORDS = new Set([
+  "service", "controller", "model", "models", "entity", "repository",
+  "module", "provider", "handler", "manager", "component", "adapter",
+  "factory", "helper", "middleware", "worker", "client", "context",
+]);
+
+/**
+ * Real-world identifiers mix naming conventions across a diff and its
+ * rendered diagram label: a file named auth.controller.ts vs a diagram
+ * node labeled "AuthController"; a Python file items.py vs a definition
+ * `def read_item(...)`. A single extraction pass that only splits on
+ * characters outside [a-z0-9_] treats "AuthController" (no such
+ * characters) as one indivisible blob that can never equal the two
+ * pieces "auth"/"controller" it should be recognized as. This tokenizer
+ * runs two passes and unions the results: the original whole-word pass
+ * (kept as-is, so every previously-working match still works), plus a
+ * decomposition pass that also splits camelCase/PascalCase boundaries
+ * (and, redundantly with the first pass, underscore/dot/hyphen) into
+ * lowercase word-pieces — so "AuthController", "auth.controller",
+ * "auth_controller" and "authController" all normalize to the same
+ * {"auth","controller"} regardless of which convention either side
+ * happens to use. Found necessary after this collapsed to near-100%
+ * *Context (i.e. "nothing here actually changed") on two REAL external
+ * repos run through the full pipeline end to end (a Python/FastAPI PR,
+ * a NestJS PR) — neither shares the single-word-camelCase file-naming
+ * style the original synthetic test fixtures happened to use, and the
+ * plural/singular and def-vs-label mismatches those repos' real code
+ * produced were being silently swallowed as "unrelated pre-existing
+ * code," exactly the failure mode this module was built to prevent, just
+ * approached from the opposite direction.
+ */
 function tokenize(text: string): string[] {
-  const matches = text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) ?? [];
-  return matches.filter((t) => !STOPWORDS.has(t));
+  const wholeWordTokens = text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) ?? [];
+
+  const decomposed = text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/[._-]+/g, " ")
+    .toLowerCase();
+  const splitTokens = decomposed.match(/[a-z][a-z0-9]{2,}/g) ?? [];
+
+  const all = [...new Set([...wholeWordTokens, ...splitTokens])].filter((t) => !STOPWORDS.has(t));
+
+  const specific = all.filter((t) => !ARCHITECTURAL_SUFFIX_WORDS.has(t));
+  // If something more specific survived, drop the generic layer-suffix
+  // noise. If the identifier was ENTIRELY generic (e.g. a file literally
+  // named "models.py"), keep it anyway -- it's the only signal this
+  // identifier has, and no signal at all is worse than an occasional
+  // architectural-layer word.
+  return specific.length > 0 ? specific : all;
 }
 
 // Only lines shaped like a *definition* count as evidence a node was
@@ -86,6 +149,8 @@ const DEFINITION_PATTERNS: RegExp[] = [
   /\bALTER\s+TABLE\s+([A-Za-z_]\w*)/i,
   /\bADD\s+COLUMN\s+([A-Za-z_]\w*)/i,
   /\bDROP\s+TABLE\s+([A-Za-z_]\w*)/i,
+  /\bdef\s+([A-Za-z_]\w*)/, // python: def name(...) / async def name(...)
+  /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/, // go: func name(...) or func (r *Receiver) name(...)
 ];
 
 function extractDefinedTokens(line: string): string[] {
