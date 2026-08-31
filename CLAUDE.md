@@ -288,3 +288,35 @@ A static PNG can't show the animation — proved it's real with
 `scripts/capture-flow-gif.mjs` (captures a burst of real rendered frames)
 assembled into a GIF, and diffed two frames pixel-by-pixel to confirm they
 actually differ before calling it done. Tests: 91 → 100 backend.
+
+## 11. Correction to item 10, same day — "dotted" wasn't what was asked for, and "transparent" reads as white
+
+Immediate follow-up feedback: "not dotted line, arrow running on fix line,
+dont use white color at all, make it black." Two real corrections, not
+just more polish:
+
+- Item 10's first animation used Mermaid's built-in `animate: true` edge
+  metadata, which works by animating a dashed stroke
+  (`stroke-dasharray`/`stroke-dashoffset`) — that reads as "dotted," which
+  is exactly what was flagged. Replaced entirely: edges now render as a
+  normal SOLID line (`stroke-dasharray:none !important`), and a small
+  glowing arrowhead physically travels along the edge's own path via SVG's
+  native `<animateMotion>`/`<mpath>`, reading the edge's real `d` geometry
+  and stable auto-assigned `id` straight out of the rendered SVG
+  (`injectFlowRunners()`, replacing the old source-level
+  `injectEdgeFlowAnimation()`, which is gone). This is more robust than
+  the thing it replaced, too — no dependency on Mermaid edge-id syntax or
+  the model's cooperation at all, since mmdc already gives every edge a
+  stable id regardless.
+- The `-b transparent` flag to `mmdc` meant the diagram's own canvas had
+  no fill outside drawn shapes — invisible against a dark page, but shows
+  as flat white once embedded on GitHub's actual default (light) PR-
+  comment background, which is what was being flagged as "white." Changed
+  to an opaque fill matching the theme's own dark background
+  (`ARCHLENS_THEME_CONFIG.themeVariables.background`), so the canvas is
+  always fully dark regardless of what page embeds it.
+
+Both changes are real fixes, not label changes — verified against a real
+mmdc render (`stroke-dasharray:none` present, `background-color:` no
+longer `transparent`) and against the actual visible screenshots, not
+assumed from the code alone.

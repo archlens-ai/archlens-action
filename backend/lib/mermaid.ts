@@ -305,56 +305,6 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
   return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);
 }
 
-// Only matches a plain, unlabeled-or-labeled directed edge line the model
-// emits in its usual shape ("A --> B" / "A -->|label| B" / dotted/thick
-// variants) that doesn't already carry an edge id — a line already
-// rewritten (or one this doesn't recognize) is left alone rather than
-// risking corrupting it.
-const EDGE_LINE_RE =
-  /^(\s*)([A-Za-z_]\w*)\s*(-->|-\.->|==>)\s*(\|[^|]*\|)?\s*([A-Za-z_]\w*)\s*$/;
-
-/**
- * User ask (2026-08-31): "add dynamic glowing arrow to show direction of
- * data flow." Rather than trust the LLM to emit Mermaid's edge-id +
- * `animate: true` syntax reliably (the project's own diff-classify.ts
- * exists specifically because LLM instruction-following degrades under
- * complexity), this rewrites every plain directed edge the model emits
- * into an animated one deterministically, in code: `A --> B` becomes
- * `A archFlow1@--> B` plus an appended `archFlow1@{ animate: true }`
- * directive. Confirmed against a real mmdc render that this produces a
- * genuine moving-dash animation along the edge (Mermaid's built-in
- * `edge-animation-fast` CSS class), not a no-op. Flowchart-only — this
- * edge-id syntax doesn't apply to sequenceDiagram's message-arrow syntax.
- */
-export function injectEdgeFlowAnimation(source: string): string {
-  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
-  if (!isFlowchart) {
-    return source;
-  }
-
-  let counter = 0;
-  const animateDirectives: string[] = [];
-
-  const rewritten = source
-    .split("\n")
-    .map((line) => {
-      const match = EDGE_LINE_RE.exec(line);
-      if (!match) return line;
-      const [, indent, sourceId, arrow, label, targetId] = match;
-      counter += 1;
-      const edgeId = `archFlow${counter}`;
-      animateDirectives.push(`${edgeId}@{ animate: true }`);
-      return `${indent}${sourceId} ${edgeId}@${arrow}${label ?? ""} ${targetId}`;
-    })
-    .join("\n");
-
-  if (animateDirectives.length === 0) {
-    return source; // nothing matched (e.g. no edges, or an unrecognized shape) — don't touch it
-  }
-
-  return `${rewritten.trimEnd()}\n${animateDirectives.join("\n")}\n`;
-}
-
 // A single reusable glow filter, injected once per rendered SVG. Applied
 // via CSS (below) to edge/message-line paths only — never to text or node
 // fill areas, since blurring those would make labels illegible rather than
@@ -369,19 +319,78 @@ const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" x="-60%" y="-60%" width=
  * no glow — this overrides both with `!important` (simplest reliable way to
  * beat rules already baked into the SVG's own embedded <style>, since we
  * don't control mmdc's stylesheet generation directly) and forces bold text
- * throughout. Applies to both diagram types; the moving-dash animation
- * itself (injectEdgeFlowAnimation, above) is flowchart-only.
+ * throughout. Applies to both diagram types.
+ *
+ * Round-6 correction, direct user feedback: the first version of "dynamic"
+ * used Mermaid's built-in `animate: true` edge metadata, which works by
+ * animating a dashed stroke (`stroke-dasharray` + moving `stroke-dashoffset`)
+ * — the user correctly called this out as "dotted," not what they asked
+ * for ("arrow running on fix[ed] line"). Edges here stay a normal SOLID
+ * line (no dasharray at all); direction is instead shown by a small glowing
+ * arrowhead that physically travels along the edge's own path via SVG's
+ * native `<animateMotion>` — see injectFlowRunners() below, which reads
+ * each edge's own `d` geometry straight out of the rendered SVG rather
+ * than asking Mermaid/the model to cooperate with anything.
  */
 export function applyBoldGlowStyling(svg: string): string {
   const overrideStyle =
     `<style>` +
     `text{font-weight:700 !important;}` +
-    `.flowchart-link{stroke-width:2.5px !important;filter:url(#${GLOW_FILTER_ID});}` +
+    `.flowchart-link{stroke-width:2.5px !important;stroke-dasharray:none !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.edgeLabel{font-weight:700 !important;}` +
     `</style>`;
 
   return svg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
+}
+
+const EDGE_PATH_TAG_RE = /<path\b[^>]*\bclass="[^"]*\bflowchart-link\b[^"]*"[^>]*\/>/g;
+
+function extractAttr(tag: string, attr: string): string | null {
+  const m = new RegExp(`\\b${attr}="([^"]*)"`).exec(tag);
+  return m?.[1] ?? null;
+}
+
+/**
+ * Makes the direction of data flow visible as motion, per the user's ask —
+ * a small glowing arrowhead physically traveling along each edge's own
+ * path, not a dashed line pretending to move. Mermaid/mmdc already gives
+ * every flowchart edge a stable `id` (confirmed against a real render:
+ * even a plain, untouched `A --> B` gets `id="my-svg-L_A_B_0"`), so this
+ * reads that id and the edge's own `d` geometry straight out of the
+ * rendered SVG and attaches an `<animateMotion>` runner via `<mpath>` —
+ * no cooperation needed from Mermaid syntax or the model, and it can never
+ * miss an edge the model might phrase unusually, unlike the source-level
+ * rewrite this replaced. `rotate="auto"` keeps the arrowhead pointed along
+ * the path's own tangent as it moves, so it still reads as "an arrow,"
+ * not just a dot. Flowchart-only: sequenceDiagram message lines don't
+ * expose an equivalent stable per-edge id in mmdc's output.
+ */
+export function injectFlowRunners(svg: string): string {
+  const edgeTags = svg.match(EDGE_PATH_TAG_RE) ?? [];
+  if (edgeTags.length === 0) {
+    return svg;
+  }
+
+  const runners = edgeTags
+    .map((tag) => {
+      const id = extractAttr(tag, "id");
+      if (!id) return null;
+      return (
+        `<path d="M-5,-4 L6,0 L-5,4 L-2,0 Z" fill="#79c0ff" stroke="#0d1117" stroke-width="0.75"` +
+        ` filter="url(#${GLOW_FILTER_ID})">` +
+        `<animateMotion dur="2.8s" repeatCount="indefinite" rotate="auto">` +
+        `<mpath href="#${id}" xlink:href="#${id}"/>` +
+        `</animateMotion></path>`
+      );
+    })
+    .filter((r): r is string => r !== null);
+
+  if (runners.length === 0) {
+    return svg;
+  }
+
+  return svg.replace(/<\/svg>\s*$/, `${runners.join("")}</svg>`);
 }
 
 function escapeXml(text: string): string {
@@ -455,7 +464,7 @@ export async function renderMermaidToSvg(
   const themeConfigPath = join(dir, "theme-config.json");
 
   try {
-    await writeFile(inputPath, applyArchLensStyling(injectEdgeFlowAnimation(source)), "utf8");
+    await writeFile(inputPath, applyArchLensStyling(source), "utf8");
     await writeFile(themeConfigPath, JSON.stringify(ARCHLENS_THEME_CONFIG), "utf8");
     // --no-sandbox is required to run headless Chromium as root/in most
     // containerized CI and serverless environments.
@@ -474,7 +483,13 @@ export async function renderMermaidToSvg(
       "-o",
       outputPath,
       "-b",
-      "transparent",
+      // User feedback (2026-08-31): "dont use white color at all, make it
+      // black." A transparent background let the page behind the <img>
+      // show through in GitHub's default light PR-comment theme — that
+      // page shows as white, which is exactly the "white" being flagged.
+      // An opaque fill matching the theme's own background guarantees the
+      // whole canvas is always dark, regardless of what page embeds it.
+      ARCHLENS_THEME_CONFIG.themeVariables.background,
       "-c",
       themeConfigPath,
       "-p",
@@ -483,7 +498,9 @@ export async function renderMermaidToSvg(
 
     const rawSvg = await readFile(outputPath, "utf8");
     const diagramType = /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
-    return { svg: appendLegend(applyBoldGlowStyling(rawSvg), diagramType) };
+    const styled = applyBoldGlowStyling(rawSvg);
+    const withRunners = diagramType === "flowchart" ? injectFlowRunners(styled) : styled;
+    return { svg: appendLegend(withRunners, diagramType) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

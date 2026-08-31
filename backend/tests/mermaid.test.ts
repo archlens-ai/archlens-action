@@ -3,7 +3,7 @@ import {
   appendLegend,
   applyArchLensStyling,
   applyBoldGlowStyling,
-  injectEdgeFlowAnimation,
+  injectFlowRunners,
   renderMermaidToSvg,
   validateMermaidSyntax,
 } from "../lib/mermaid.js";
@@ -93,32 +93,42 @@ describe("applyArchLensStyling", () => {
   });
 });
 
-describe("injectEdgeFlowAnimation", () => {
-  it("rewrites a plain edge with a generated edge id and appends an animate directive", () => {
-    const result = injectEdgeFlowAnimation('flowchart TD\n  A --> B');
-    expect(result).toMatch(/A archFlow1@--> B/);
-    expect(result).toContain("archFlow1@{ animate: true }");
+describe("injectFlowRunners", () => {
+  // A shape matching what mmdc actually emits for a plain, untouched edge —
+  // confirmed against a real render before relying on it: even without any
+  // custom id syntax, mmdc gives every edge a stable id like this.
+  const sampleEdgeSvg =
+    '<svg id="my-svg" viewBox="0 0 100 200">' +
+    '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal edge-pattern-solid flowchart-link" style=""/>' +
+    "</svg>";
+
+  it("attaches an animateMotion runner referencing the edge's own id via mpath", () => {
+    const result = injectFlowRunners(sampleEdgeSvg);
+    expect(result).toContain("<animateMotion");
+    expect(result).toContain('href="#my-svg-L_A_B_0"');
+    expect(result).toContain('xlink:href="#my-svg-L_A_B_0"');
+    expect(result).toContain('repeatCount="indefinite"');
   });
 
-  it("preserves an edge's label when rewriting it", () => {
-    const result = injectEdgeFlowAnimation('flowchart TD\n  A -->|creates| B');
-    expect(result).toMatch(/A archFlow1@-->\|creates\| B/);
+  it("orients the runner along the path's own tangent as it travels", () => {
+    expect(injectFlowRunners(sampleEdgeSvg)).toContain('rotate="auto"');
   });
 
-  it("assigns a distinct id to each edge in a multi-edge diagram", () => {
-    const result = injectEdgeFlowAnimation('flowchart TD\n  A --> B\n  B --> C');
-    expect(result).toContain("archFlow1@{ animate: true }");
-    expect(result).toContain("archFlow2@{ animate: true }");
+  it("adds one runner per edge when there are multiple", () => {
+    const twoEdges =
+      '<svg id="my-svg" viewBox="0 0 100 200">' +
+      '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal flowchart-link"/>' +
+      '<path d="M10,90 L10,170" id="my-svg-L_B_C_0" class="edge-thickness-normal flowchart-link"/>' +
+      "</svg>";
+    const result = injectFlowRunners(twoEdges);
+    expect(result.match(/<animateMotion/g)?.length).toBe(2);
+    expect(result).toContain('href="#my-svg-L_A_B_0"');
+    expect(result).toContain('href="#my-svg-L_B_C_0"');
   });
 
-  it("leaves non-edge lines (node declarations, class/subgraph lines) untouched", () => {
-    const source = 'flowchart TD\n  A["x"]\n  class A endpoint';
-    expect(injectEdgeFlowAnimation(source)).toBe(source);
-  });
-
-  it("is a no-op for sequenceDiagram, whose arrow syntax doesn't support edge ids", () => {
-    const source = "sequenceDiagram\n  A->>B: hi";
-    expect(injectEdgeFlowAnimation(source)).toBe(source);
+  it("leaves an SVG with no flowchart-link edges untouched", () => {
+    const noEdges = '<svg id="my-svg" viewBox="0 0 100 200"><rect width="10" height="10"/></svg>';
+    expect(injectFlowRunners(noEdges)).toBe(noEdges);
   });
 });
 
@@ -131,10 +141,12 @@ describe("applyBoldGlowStyling", () => {
     expect(result).toContain("feGaussianBlur");
   });
 
-  it("forces bold text and brighter/thicker edge lines via an override stylesheet", () => {
+  it("forces bold text and brighter/thicker SOLID edge lines via an override stylesheet", () => {
     const result = applyBoldGlowStyling(sampleSvg);
     expect(result).toContain("font-weight:700 !important");
-    expect(result).toContain(".flowchart-link{stroke-width:2.5px !important;filter:url(#archlens-glow)");
+    expect(result).toContain(
+      ".flowchart-link{stroke-width:2.5px !important;stroke-dasharray:none !important;filter:url(#archlens-glow)"
+    );
     expect(result).toContain(".messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#archlens-glow)");
   });
 
@@ -238,17 +250,33 @@ describe("renderMermaidToSvg (integration)", () => {
     expect(svg).toContain("dashed = existing context");
   }, 30_000);
 
-  // Round-5 addition, direct user feedback: confirms the animated-flow-arrow
-  // and bold/glow requests actually reach the real rendered output through
-  // mmdc, not just the string-manipulation unit tests above.
-  it("renders a real animated, glowing edge end to end", async () => {
+  // Round-5/6 addition, direct user feedback: confirms the animated-flow-
+  // arrow and bold/glow requests actually reach the real rendered output
+  // through mmdc, not just the string-manipulation unit tests above. Round
+  // 6 corrected the animation mechanism after the user pointed out the
+  // first version (a dashed line) looked "dotted," not a solid line with
+  // an arrow running along it.
+  it("renders a real solid (non-dashed) edge with a moving arrow runner, end to end", async () => {
     const { svg } = await renderMermaidToSvg(
       'flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint\n  class B logic',
       { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
     );
-    expect(svg).toContain("edge-animation-fast"); // Mermaid's real moving-dash animation class
+    expect(svg).toContain("<animateMotion"); // the moving arrowhead, not a dashed line
+    expect(svg).toContain("stroke-dasharray:none !important"); // edges stay solid
     expect(svg).toContain("archlens-glow");
     expect(svg).toContain("font-weight:700");
+  }, 30_000);
+
+  // "dont use white color at all, make it black" -- the diagram previously
+  // rendered with a transparent background, which showed as white once
+  // embedded on GitHub's default light PR-comment page. Confirms the
+  // rendered SVG is now opaque dark, not relying on the page behind it.
+  it("renders an opaque dark background rather than a transparent one", async () => {
+    const { svg } = await renderMermaidToSvg('flowchart TD\n  A["x"] --> B["y"]', {
+      executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH,
+    });
+    expect(svg).not.toContain("background-color: transparent");
+    expect(svg).toContain("#0d1117");
   }, 30_000);
 
   it("refuses to render invalid mermaid source", async () => {
