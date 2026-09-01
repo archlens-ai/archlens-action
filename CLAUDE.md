@@ -562,3 +562,24 @@ real and worth having, but "layout is now solved" would be an
 overclaim — "the one specific, previously-ticketed defect is fixed;
 several adjacent polish/accuracy gaps remain, now itemized instead of
 vague."
+
+**Follow-up, same session: went and generated the `removed` example the
+review said was missing — found a new, real bug doing it, not just
+confirmed the gap.** Built a small diff with two genuinely deleted files
+(a route and the service it called) plus one added route, ran it through
+the real pipeline. The LLM classification was correct (`class A,C
+removed`), and the node styling is correct — dashed red border, reddish
+text, visually distinct. But **the edge connecting the two removed
+nodes still renders as a normal, bright, glowing solid blue line** —
+`applyBoldGlowStyling()`'s CSS override targets `.flowchart-link`
+unconditionally, with no awareness of which nodes an edge actually
+connects. The result: a vivid "this is alive and current" arrow drawn
+between two boxes explicitly marked "no longer exists," which
+undermines the exact visual language the `removed` category exists to
+establish. Screenshot: `scripts/.dry-run-output/removed-state-final.png`.
+Not fixed yet — would need edge-to-node-category cross-referencing in
+the SVG post-processing step (parse each node's assigned category from
+its own `<g class="node ... ">` id, then look up each edge's source/
+target against that map before deciding its style), which is a real,
+scoped change, not a one-line fix. Flagged for the next round of visual
+work on this, alongside the other three findings above.
