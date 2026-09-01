@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join, normalize } from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+
+const require = createRequire(import.meta.url);
 
 const ALLOWED_DECLARATIONS = [/^flowchart\s+(TD|LR|BT|RL)\b/i, /^sequenceDiagram\b/i];
 
@@ -310,7 +312,21 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
 // fill areas, since blurring those would make labels illegible rather than
 // "bold and bright."
 const GLOW_FILTER_ID = "archlens-glow";
-const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.4" result="archlens-blur"/><feMerge><feMergeNode in="archlens-blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
+// filterUnits="userSpaceOnUse" (not the SVG default, objectBoundingBox) is
+// deliberate, not cosmetic: with the default, x/y/width/height percentages
+// are computed against the FILTERED ELEMENT's OWN bounding box — and for a
+// perfectly straight vertical or horizontal edge (one shared x or y across
+// every point in its path) that box has zero width or height, so any
+// percentage of it is still zero. A zero-size filter region clips the
+// entire filtered edge to nothing — invisible line, only its (unfiltered)
+// arrowhead marker left floating with no visible line into it. Found via a
+// real end-to-end render (a PR diff whose ELK layout happened to place two
+// nodes in a dead-straight vertical line — routine for ELK's orthogonal
+// routing, much rarer for dagre's, which is presumably why this never
+// surfaced against the old mmdc/dagre pipeline). userSpaceOnUse resolves
+// the same percentages against the SVG's own viewport instead, which is
+// never zero.
+const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" filterUnits="userSpaceOnUse" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="archlens-blur"/><feMerge><feMergeNode in="archlens-blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
 
 /**
  * User ask (2026-08-31): "make the text and line bright and bold... clearly
@@ -344,7 +360,13 @@ export function applyBoldGlowStyling(svg: string): string {
   return svg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
 }
 
-const EDGE_PATH_TAG_RE = /<path\b[^>]*\bclass="[^"]*\bflowchart-link\b[^"]*"[^>]*\/>/g;
+// Matches just the opening `<path ...>` tag, regardless of whether it's
+// self-closed (`.../>`, what mmdc's CLI used to emit) or open-then-closed
+// (`...></path>`, what a raw `mermaid.render()` call emits directly — no
+// mmdc post-processing sits between us and the SVG anymore). Only the
+// opening tag's attributes are ever read out of the match, so which form
+// closes it doesn't matter for extractAttr().
+const EDGE_PATH_TAG_RE = /<path\b[^>]*\bclass="[^"]*\bflowchart-link\b[^"]*"[^>]*>/g;
 
 function extractAttr(tag: string, attr: string): string | null {
   const m = new RegExp(`\\b${attr}="([^"]*)"`).exec(tag);
@@ -433,103 +455,219 @@ export interface RenderResult {
   svg: string;
 }
 
+// Resolved once per process, not per render call — these files never
+// change while the process is alive, and re-reading them from disk on
+// every single diagram would be pure waste in a render worker handling
+// many PRs.
+const MERMAID_DIST = join(dirname(require.resolve("mermaid/package.json")), "dist");
+const ELK_DIST = join(dirname(require.resolve("@mermaid-js/layout-elk/package.json")), "dist");
+
+// Per-file cache, not just per-entry-point: mermaid's ESM build isn't one
+// file — `mermaid.esm.min.mjs` itself pulls in several `chunks/**/*.mjs`
+// files via relative `import`s at runtime (confirmed empirically — serving
+// only the two named entry files 404s on those sub-imports the moment
+// mermaid actually runs, even though the entry file itself loads fine).
+// So the whole `dist` directory has to be servable by relative path, the
+// same way any static file server would, not just two hardcoded routes.
+const distFileCache = new Map<string, Buffer>();
+
+function contentTypeFor(path: string): string {
+  if (path.endsWith(".mjs") || path.endsWith(".js")) return "text/javascript";
+  if (path.endsWith(".map")) return "application/json";
+  return "application/octet-stream";
+}
+
+async function readDistFile(distRoot: string, relativePath: string): Promise<Buffer | null> {
+  // Defensive normalize: this only ever serves paths derived from mermaid's
+  // own internal imports, but a static file handler that resolves `..`
+  // outside its root is a mistake worth not making anyway.
+  const normalized = normalize(relativePath).replace(/^(\.\.[/\\])+/, "");
+  const cacheKey = `${distRoot}/${normalized}`;
+  const cached = distFileCache.get(cacheKey);
+  if (cached) return cached;
+  try {
+    const buf = await readFile(join(distRoot, normalized));
+    distFileCache.set(cacheKey, buf);
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Renders validated Mermaid source to SVG via the mermaid-cli (mmdc)
- * binary. mmdc bundles its own headless Chromium via puppeteer, which is
- * why this step is deliberately NOT run inside a customer's CI runner (that
- * would mean installing Puppeteer's Chromium on every single PR, adding
- * real minutes to CI) — it runs once, here, on ArchLens's own render
- * worker, and the Action just gets back a URL.
+ * Serves the mermaid + layout-elk ESM bundles (and every chunk file they
+ * pull in) over a real (loopback-only) HTTP server rather than injecting
+ * them as inline <script> content. A plain `page.setContent()` with no
+ * origin doesn't give those relative sub-imports anything to resolve
+ * against, so the bundle needs an actual resolvable base URL. This spins up
+ * fresh on an OS-assigned port for the lifetime of one render call and is
+ * torn down immediately after — nothing persists, nothing is reachable
+ * from outside this process.
+ */
+async function startBundleServer(): Promise<{ url: string; close: () => void }> {
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const url = req.url ?? "/";
+      if (url === "/") {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(
+          `<!doctype html><html><body><script type="module">
+import mermaid from '/mermaid/mermaid.esm.min.mjs';
+import elkLayouts from '/elk/mermaid-layout-elk.esm.min.mjs';
+mermaid.registerLayoutLoaders(elkLayouts);
+mermaid.initialize(${JSON.stringify({ startOnLoad: false, securityLevel: "strict", ...ARCHLENS_THEME_CONFIG })});
+window.__archlensRender = async (id, source) => {
+  const { svg } = await mermaid.render(id, source);
+  return svg;
+};
+window.__archlensReady = true;
+</script></body></html>`
+        );
+        return;
+      }
+      const mermaidMatch = url.match(/^\/mermaid\/(.+)$/);
+      const elkMatch = url.match(/^\/elk\/(.+)$/);
+      const [distRoot, relativePath] = mermaidMatch
+        ? [MERMAID_DIST, mermaidMatch[1]]
+        : elkMatch
+          ? [ELK_DIST, elkMatch[1]]
+          : [null, null];
+      if (!distRoot || !relativePath) {
+        res.writeHead(404).end();
+        return;
+      }
+      const file = await readDistFile(distRoot, relativePath);
+      if (!file) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { "content-type": contentTypeFor(relativePath) });
+      res.end(file);
+    })();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  return { url: `http://127.0.0.1:${port}/`, close: () => server.close() };
+}
+
+/**
+ * Renders validated Mermaid source to SVG via a purpose-built Puppeteer
+ * harness that loads Mermaid + `@mermaid-js/layout-elk` directly, rather
+ * than the mermaid-cli (mmdc) binary this used to shell out to. Why the
+ * switch: dagre (mmdc's only layout engine) breaks down on realistic-scale
+ * diagrams — edges cross through unrelated node boxes, cross-cutting
+ * edges escape their subgraph's box entirely (confirmed and disclosed
+ * across several review rounds; see CLAUDE.md items 9/12/13 and the
+ * Project doc). ELK ("elk.layered") is a hierarchical, subgraph-aware
+ * layout engine that doesn't have this failure mode — verified with a
+ * side-by-side spike against the exact 10-file stress diagram that
+ * exposed the dagre problem before this was wired into production:
+ * dagre left `NotificationService` and `RefundWorker` floating outside
+ * every subgraph box with edges cutting across unrelated nodes; ELK put
+ * every node inside its correct subgraph with clean orthogonal routing.
+ * `@mermaid-js/layout-elk` isn't bundled with mmdc's own install, which is
+ * why this needed a real render harness rather than a config flag.
+ *
+ * ELK only applies to flowcharts — it's a flowchart-specific layout
+ * engine, so sequence diagrams render exactly as before (no `layout`
+ * frontmatter added for them at all, deliberately, rather than risk
+ * whatever an unsupported `layout` config does to a diagram type that has
+ * no such concept).
  */
 export async function renderMermaidToSvg(
   source: string,
-  opts: { mmdcPath?: string; timeoutMs?: number; executablePath?: string } = {}
+  opts: { timeoutMs?: number; executablePath?: string } = {}
 ): Promise<RenderResult> {
   const validation = validateMermaidSyntax(source);
   if (!validation.valid) {
     throw new Error(`Refusing to render invalid diagram: ${validation.error}`);
   }
 
-  const mmdcPath = opts.mmdcPath ?? "mmdc";
   const timeoutMs = opts.timeoutMs ?? 15_000;
   // The render worker owns its own Chromium (via a Docker base image or
   // @sparticuz/chromium on serverless) — never assumed to be the system
   // default, since that varies wildly across deployment targets.
   const executablePath = opts.executablePath ?? process.env.PUPPETEER_EXECUTABLE_PATH;
+  const diagramType = /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
 
-  const dir = await mkdtemp(join(tmpdir(), "archlens-render-"));
-  const inputPath = join(dir, `${randomUUID()}.mmd`);
-  const outputPath = join(dir, `${randomUUID()}.svg`);
-  const puppeteerConfigPath = join(dir, "puppeteer-config.json");
-  const themeConfigPath = join(dir, "theme-config.json");
+  let styledSource = applyArchLensStyling(source);
+  if (diagramType === "flowchart") {
+    styledSource = `---\nconfig:\n  layout: elk\n---\n${styledSource}`;
+  }
 
+  const puppeteer = (await import("puppeteer-core")).default;
+  const { url, close } = await startBundleServer();
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
-    await writeFile(inputPath, applyArchLensStyling(source), "utf8");
-    await writeFile(themeConfigPath, JSON.stringify(ARCHLENS_THEME_CONFIG), "utf8");
-    // --no-sandbox is required to run headless Chromium as root/in most
-    // containerized CI and serverless environments.
-    await writeFile(
-      puppeteerConfigPath,
-      JSON.stringify({
+    browser = await Promise.race([
+      puppeteer.launch({
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
         ...(executablePath ? { executablePath } : {}),
       }),
-      "utf8"
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`render timed out after ${timeoutMs}ms`)), timeoutMs)),
+    ]);
+    const page = await browser.newPage();
+    // Kept (not just a debugging leftover): a JS error thrown inside the
+    // page during mermaid.render() would otherwise surface only as an
+    // opaque "waitForFunction timed out" from Puppeteer, with the real
+    // cause silently lost in the page's own console. This is what actually
+    // surfaced the true fix during development (a 404 on mermaid's internal
+    // chunk imports) instead of a bare timeout — worth keeping for the same
+    // reason in production, where a render worker with no visibility into
+    // its own browser errors is much harder to debug from logs alone.
+    page.on("pageerror", (err) => console.error("[archlens-render][pageerror]", err));
+    await page.goto(url, { waitUntil: "networkidle0", timeout: timeoutMs });
+    await page.waitForFunction("window.__archlensReady === true", { timeout: timeoutMs });
+
+    // `window` isn't typed here on purpose: this arrow function is
+    // stringified by Puppeteer and executed inside the page's browser
+    // context, not this Node process, and the backend's tsconfig
+    // deliberately doesn't include the "dom" lib (this file has no other
+    // reason to need it). `globalThis` IS `window` at runtime in a
+    // browser context, and typechecks fine under a plain ES2022 lib.
+    const rawSvg = await page.evaluate(
+      async (src: string) =>
+        (globalThis as unknown as { __archlensRender: (id: string, s: string) => Promise<string> }).__archlensRender(
+          "archlens-diagram",
+          src
+        ),
+      styledSource
     );
 
-    await runMmdc(mmdcPath, [
-      "-i",
-      inputPath,
-      "-o",
-      outputPath,
-      "-b",
-      // User feedback (2026-08-31): "dont use white color at all, make it
-      // black." A transparent background let the page behind the <img>
-      // show through in GitHub's default light PR-comment theme — that
-      // page shows as white, which is exactly the "white" being flagged.
-      // An opaque fill matching the theme's own background guarantees the
-      // whole canvas is always dark, regardless of what page embeds it.
-      ARCHLENS_THEME_CONFIG.themeVariables.background,
-      "-c",
-      themeConfigPath,
-      "-p",
-      puppeteerConfigPath,
-    ], timeoutMs);
+    // mmdc's own `-b <color>` flag used to guarantee an opaque canvas —
+    // "dont use white color at all, make it black" (see CLAUDE.md item
+    // 11): a transparent canvas lets the embedding page's own background
+    // show through, which is white on GitHub's default light PR-comment
+    // theme. Replicated here by injecting the same style directly onto
+    // the rendered SVG's root element, since this harness renders via
+    // mermaid.render() directly rather than mmdc's CLI, which was where
+    // that behavior used to live.
+    const withBackground = rawSvg.replace(
+      /(<svg[^>]*\bstyle=")([^"]*)(")/,
+      (_m, pre: string, style: string, post: string) =>
+        `${pre}${style}${style.trim().endsWith(";") ? "" : ";"}background-color: ${ARCHLENS_THEME_CONFIG.themeVariables.background};${post}`
+    );
 
-    const rawSvg = await readFile(outputPath, "utf8");
-    const diagramType = /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
-    const styled = applyBoldGlowStyling(rawSvg);
+    // mmdc's own SVG output used to declare xmlns:xlink by default; a raw
+    // mermaid.render() call doesn't. injectFlowRunners() below emits
+    // xlink:href on its <mpath> elements (kept alongside the unprefixed
+    // href for older-renderer compatibility, per SVG2 vs SVG1.1), and
+    // without this the resulting document is not well-formed XML — which
+    // is invisible in a browser's lenient HTML-mode <img> rendering but
+    // breaks it outright when embedded as an actual <img src="...svg">,
+    // exactly how GitHub renders it in a PR comment (caught by trying to
+    // screenshot this end-to-end the same way GitHub does, not by any unit
+    // test — confirmed with xml.dom.minidom: "unbound prefix" before this
+    // fix, clean parse after).
+    const withXlinkNs = /\bxmlns:xlink=/.test(withBackground)
+      ? withBackground
+      : withBackground.replace(/^<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+
+    const styled = applyBoldGlowStyling(withXlinkNs);
     const withRunners = diagramType === "flowchart" ? injectFlowRunners(styled) : styled;
     return { svg: appendLegend(withRunners, diagramType) };
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    if (browser) await browser.close();
+    close();
   }
-}
-
-function runMmdc(mmdcPath: string, args: string[], timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(mmdcPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`mmdc timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`mmdc exited with code ${code}: ${stderr.slice(0, 1000)}`));
-      }
-    });
-  });
 }

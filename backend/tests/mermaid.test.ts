@@ -282,4 +282,67 @@ describe("renderMermaidToSvg (integration)", () => {
   it("refuses to render invalid mermaid source", async () => {
     await expect(renderMermaidToSvg("not a real diagram")).rejects.toThrow(/invalid diagram/);
   });
+
+  // Regression test for a real bug the switch to a direct mermaid.render()
+  // harness introduced (found only by screenshotting the output the way
+  // GitHub actually embeds it, not by any of the substring assertions
+  // above): mmdc's CLI output used to declare xmlns:xlink by default;
+  // mermaid.render() alone doesn't, but injectFlowRunners() still emits
+  // xlink:href on its <mpath> elements. The result was a document that
+  // looked fine as substrings, satisfied every other assertion in this
+  // file, and rendered in a lenient browser <img> preview in some tools —
+  // but was NOT well-formed XML ("unbound prefix"), and silently failed to
+  // decode at all when loaded via <img src="...svg">, exactly how GitHub
+  // embeds this in a PR comment. Two independent checks, both real: (1) a
+  // strict XML parse, since that's the actual defect; (2) an actual
+  // browser decoding it as an <img>, since that's the actual consumer.
+  it("produces well-formed XML that decodes as a real <img>, not just a string containing the right substrings", async () => {
+    const { svg } = await renderMermaidToSvg(
+      'flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint\n  class B logic',
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+    );
+
+    const { DOMParser } = await import("@xmldom/xmldom");
+    const errors: string[] = [];
+    const parser = new DOMParser({
+      onError: (_level: string, msg: string) => errors.push(msg),
+    });
+    parser.parseFromString(svg, "image/svg+xml");
+    expect(errors.join("\n")).not.toMatch(/unbound prefix|not well-formed/i);
+
+    const puppeteer = (await import("puppeteer-core")).default;
+    const browser = await puppeteer.launch({
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH,
+    });
+    try {
+      const page = await browser.newPage();
+      const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+      await page.setContent(
+        `<img id="img" src="${dataUrl}" onerror="window.__imgError = true">`
+      );
+      // `document`/`HTMLImageElement` aren't typed in this file on purpose
+      // (see renderMermaidToSvg's own comment above, same tsconfig
+      // constraint) — these run in the page's browser context via
+      // page.evaluate/waitForFunction, not this Node process, so a plain
+      // string (waitForFunction) or a globalThis-only function
+      // (page.evaluate) keeps tsc happy without pulling in the dom lib.
+      await page.waitForFunction(
+        "window.__imgError === true || document.getElementById('img')?.complete === true",
+        { timeout: 10_000 }
+      );
+      const result = await page.evaluate(() => {
+        const g = globalThis as unknown as {
+          __imgError?: boolean;
+          document: { getElementById: (id: string) => { naturalWidth: number } | null };
+        };
+        const img = g.document.getElementById("img");
+        return { naturalWidth: img?.naturalWidth ?? 0, errored: g.__imgError === true };
+      });
+      expect(result.errored).toBe(false);
+      expect(result.naturalWidth).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+    }
+  }, 30_000);
 });

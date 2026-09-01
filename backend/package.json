@@ -11,11 +11,15 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@mermaid-js/layout-elk": "^0.2.3",
     "@supabase/supabase-js": "^2.45.4",
+    "mermaid": "^11.14.0",
+    "puppeteer-core": "^24.43.0",
     "stripe": "^16.9.0"
   },
   "devDependencies": {
     "@vercel/node": "^3.2.11",
+    "@xmldom/xmldom": "^0.9.12",
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
   }

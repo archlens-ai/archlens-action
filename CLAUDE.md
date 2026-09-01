@@ -421,3 +421,81 @@ Remaining open item from this whole line of work: the layout-at-scale
 decision (ELK harness vs. flat-layout fallback, see item 9) is now the
 only unresolved lever on review score from the classifier/layout side of
 the product.
+
+## 14. ELK layout wired into production, plus two real rendering bugs it exposed (2026-09-01)
+
+Item 13 left one open lever: dagre (mmdc's only layout engine) crosses
+edges through unrelated nodes and lets cross-cutting edges escape their
+subgraph's box entirely at realistic scale — confirmed and disclosed back
+in item 9, never fixed until now. A side-by-side Puppeteer spike against
+the exact 10-file stress diagram confirmed Mermaid's ELK layout engine
+(`@mermaid-js/layout-elk`, hierarchical/subgraph-aware) doesn't have this
+failure mode: dagre left `NotificationService` and `RefundWorker` floating
+outside every subgraph with edges cutting across unrelated boxes; ELK put
+every node inside its correct subgraph with clean orthogonal routing.
+
+`@mermaid-js/layout-elk` isn't bundled with mmdc, so this wasn't a config
+flag — `renderMermaidToSvg()` in `backend/lib/mermaid.ts` was rewritten
+from a `mmdc` CLI child-process invocation to a purpose-built Puppeteer
+harness that loads `mermaid` + `@mermaid-js/layout-elk` directly (serving
+both packages' full `dist` directories over a loopback HTTP server so
+mermaid's internal chunk sub-imports resolve, registering the ELK layout
+loader, and calling `mermaid.render()` in-page). ELK frontmatter is only
+prepended for flowcharts; sequence diagrams are untouched.
+
+Cutting mmdc out from under this pipeline (rather than just adding an ELK
+config flag to it) surfaced two real bugs that had been silently masked by
+mmdc's own CLI-level SVG post-processing, neither of which was about ELK
+or layout at all:
+
+1. **Non-well-formed XML, silently.** `injectFlowRunners()` emits
+   `xlink:href` on its `<mpath>` runner elements; mmdc's CLI output used
+   to declare `xmlns:xlink` by default, a raw `mermaid.render()` call
+   doesn't. Every existing test still passed (they only checked
+   substrings), and a lenient browser preview even rendered it — but
+   `xml.dom.minidom.parse()` failed with "unbound prefix", and loading the
+   SVG via an actual `<img src="...svg">` (exactly how GitHub embeds it in
+   a PR comment) silently failed to decode at all. Caught only by
+   screenshotting the real production output the way GitHub actually
+   consumes it, not by any unit test. Fixed by injecting
+   `xmlns:xlink="http://www.w3.org/1999/xlink"` onto the root `<svg>` when
+   absent. Added a real regression test (`backend/tests/mermaid.test.ts`)
+   that both strict-XML-parses the output and loads it as an actual
+   `<img>` in a real browser — verified it actually catches the bug by
+   temporarily reverting the fix and confirming the test fails.
+
+2. **A glow filter that goes invisible on perfectly straight edges.** The
+   shared `archlens-glow` `<filter>` used the SVG default
+   `objectBoundingBox` region (`-10% -10% 120% 120%`, relative to the
+   filtered element's OWN bounding box). A perfectly straight vertical (or
+   horizontal) edge — one shared x or y across its whole path — has a
+   zero-width (or zero-height) bounding box, and any percentage of zero is
+   still zero: a zero-size filter region clips the entire edge to nothing,
+   leaving only its (unfiltered) arrowhead marker floating with no visible
+   line. Found in the real FastAPI real-commit render (item 12's repo),
+   where ELK happened to place two nodes in a dead-straight vertical line
+   — routine for ELK's orthogonal routing, much rarer for dagre's, which
+   is presumably why this bug never surfaced in ~6 review rounds against
+   the old pipeline. Fixed by switching the filter to
+   `filterUnits="userSpaceOnUse"` (percentages now resolve against the
+   whole SVG viewport, which is never zero, instead of the element's own
+   possibly-zero bbox).
+
+Re-verified end-to-end through the real production pipeline (not just the
+throwaway spike) three ways: the same 10-file stress test via
+`scripts/dry-run-live-scale.ts`, and both real external repos from item 12
+(`tiangolo/full-stack-fastapi-template`, `brocoders/nestjs-boilerplate`)
+via `scripts/dry-run-real-repo.ts` — real Anthropic call, real
+`renderMermaidToSvg()`, real screenshot via the same `<img>`-embed harness
+GitHub uses. All three: every node correctly contained in its subgraph, no
+edges crossing through unrelated boxes, no invisible edges. 108/108
+backend tests (1 new), 126/126 total — confirmed the new test count
+against the pre-ELK baseline of 125 (107 backend + 18 action) to rule out
+a miscount, not just eyeballed.
+
+**The standing lesson, again:** a fix verified only against a throwaway
+spike, or only against unit tests checking substrings of a string, is not
+verified. Both bugs in this item were invisible to 31/31 passing unit
+tests and a working spike — only screenshotting the actual production
+output the way the real consumer (an `<img>` tag on a GitHub PR page)
+consumes it caught either one.
