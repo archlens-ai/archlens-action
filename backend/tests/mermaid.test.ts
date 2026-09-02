@@ -251,9 +251,53 @@ describe("appendLegend", () => {
     expect(dashedSwatches.length).toBeGreaterThanOrEqual(3); // one per category row
   });
 
-  it("draws the legend inside a bordered card rather than loose floating text", () => {
+  it("draws a visible top border on the legend strip, not loose floating text", () => {
     const withLegend = appendLegend(sampleSvg, "flowchart");
     expect(withLegend).toContain('stroke="#6e7681"');
+  });
+
+  // Round-6 redesign, direct fix for the round-5 review's "reads as a boxed
+  // afterthought crammed into the bottom-left corner": the legend used to
+  // be a narrower card left-pinned inside a full-width dark strip, leaving
+  // visible dead canvas beside it on any diagram wider than the card
+  // needed. It's now a single footer panel that spans the FULL diagram
+  // width itself (never a separate, narrower box floating inside it).
+  // Row count isn't directly exposed, so it's derived from the legend's
+  // total added height: legendHeight = rows*26 + 28 (outerPadding*2).
+  function legendRowCount(withLegend: string, originalHeight: number): number {
+    const viewBoxMatch = withLegend.match(/viewBox="0 0 [\d.]+ ([\d.]+)"/);
+    const addedHeight = Number(viewBoxMatch?.[1]) - originalHeight;
+    return Math.round((addedHeight - 28) / 26);
+  }
+
+  it("spans the full diagram width itself, rather than a narrower card floating inside a wider dark strip", () => {
+    // A very wide diagram (2000 units) is far wider than the legend
+    // content needs — the old design would size the card to its content
+    // (~320-400 units) and leave the rest of this same row visibly empty.
+    const wideSvg = '<svg id="my-svg" viewBox="0 0 2000 200" xmlns="http://www.w3.org/2000/svg"><rect width="2000" height="200"/></svg>';
+    const withLegend = appendLegend(wideSvg, "flowchart");
+    const viewBoxMatch = withLegend.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+    const newWidth = Number(viewBoxMatch?.[1]);
+    expect(newWidth).toBe(2000); // no separate, narrower card -- the footer IS the diagram's width
+    // The footer's own background rect must be exactly as wide as the
+    // diagram, not some narrower content-sized box.
+    expect(withLegend).toContain(`<rect x="0" y="0" width="${newWidth}" height=`);
+    // On a diagram this wide, everything fits on one row -- confirms the
+    // fix doesn't just widen an otherwise-still-narrow card, it actually
+    // lays items out across the available width instead of stacking them.
+    expect(legendRowCount(withLegend, 200)).toBe(1);
+  });
+
+  it("wraps onto additional rows, rather than overflowing, when the diagram is too narrow for one line", () => {
+    const narrowSvg = '<svg id="my-svg" viewBox="0 0 150 200" xmlns="http://www.w3.org/2000/svg"><rect width="150" height="200"/></svg>';
+    const withLegend = appendLegend(narrowSvg, "flowchart");
+    // Still contains every category -- narrow just means more rows, never
+    // dropped content.
+    expect(withLegend).toContain("Endpoint");
+    expect(withLegend).toContain("Logic");
+    expect(withLegend).toContain("Datastore");
+    expect(withLegend).toContain("Removed by this PR");
+    expect(legendRowCount(withLegend, 200)).toBeGreaterThan(1);
   });
 
   it("is a no-op for sequenceDiagram, where the category legend doesn't apply", () => {

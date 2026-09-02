@@ -168,7 +168,7 @@ interface LegendSwatch {
   dashed: boolean;
 }
 
-interface LegendRow {
+interface LegendItem {
   label: string;
   swatches: LegendSwatch[];
 }
@@ -176,19 +176,14 @@ interface LegendRow {
 // Round-3 redesign, from a second review: v2's legend listed
 // changed/context and endpoint/logic/datastore as five disconnected
 // swatches, so a viewer had to mentally cross two independent lists to
-// decode what "solid blue" actually means. Each category now gets one row
+// decode what "solid blue" actually means. Each category gets one item
 // showing its solid (changed) and dashed (context) swatch side by side —
 // the combination the diagram actually uses — with the solid/dashed
-// meaning explained once, up top, rather than repeated per row.
-const LEGEND_ROWS: LegendRow[] = [
-  {
-    // A middle-dot separator, not repeated spaces: SVG <text> collapses
-    // consecutive whitespace to a single space (a real rendering gap
-    // caught in visual QA — the two clauses ran together illegibly), so
-    // spacing needs an actual character, not just more space characters.
-    label: "solid = changed by this PR  ·  dashed = existing context",
-    swatches: [],
-  },
+// meaning explained once, in its own caption, rather than repeated per item.
+// (Round-6 redesign below changed how these items are LAID OUT — a
+// horizontal, full-width strip instead of a vertical list — not what they
+// show; the categories and their swatch pairs are unchanged from round 3.)
+const LEGEND_ITEMS: LegendItem[] = [
   {
     label: "Endpoint",
     swatches: [
@@ -216,6 +211,12 @@ const LEGEND_ROWS: LegendRow[] = [
   },
 ];
 
+// A middle-dot separator, not repeated spaces: SVG <text> collapses
+// consecutive whitespace to a single space (a real rendering gap caught in
+// visual QA — the two clauses ran together illegibly), so spacing needs an
+// actual character, not just more space characters.
+const LEGEND_CAPTION = "solid = changed by this PR  ·  dashed = existing context";
+
 /**
  * Applies ArchLens's fixed visual identity to already-validated Mermaid
  * source: strips any `classDef` the model emitted (untrusted styling; the
@@ -238,19 +239,36 @@ export function applyArchLensStyling(source: string): string {
   return `${withoutModelClassDefs.trimEnd()}\n\n${CATEGORY_CLASS_DEFS}\n`;
 }
 
+// Rough per-character width for the fixed FONT_STACK at a given font size —
+// the same heuristic this file already relied on before this redesign
+// (there's no real text-measurement API available in this post-processing
+// step, which runs on the SVG string after Puppeteer/Chromium has already
+// closed). Used only to lay out and size the legend; a few px of estimation
+// error is invisible at this scale.
+function estTextWidth(text: string, fontSize: number): number {
+  return text.length * fontSize * 0.56;
+}
+
 /**
- * Appends a legend card to a rendered flowchart SVG: one row per category
- * showing its solid (changed-by-this-PR) and dashed (existing-context)
- * swatch side by side — the actual combination the diagram uses — plus a
- * one-line caption explaining what solid/dashed means, instead of listing
- * category and changed-status as separate, uncombined swatches (a real
- * gap a review caught: a viewer had to cross-reference two lists to
- * decode "solid blue"). Drawn inside a bordered card so it reads as a
- * designed legend rather than loose text floating below the diagram.
- * Server-side post-processing (rather than asking the LLM to draw it)
- * means it's always present, always correct, and can never be corrupted
- * by model output. A no-op for sequenceDiagram, where this category
- * system doesn't apply.
+ * Appends a legend to a rendered flowchart SVG as a single full-width
+ * footer strip below the diagram, rather than a narrower boxed card
+ * pinned to one corner with dead canvas beside it (round-5 review: "reads
+ * as a boxed afterthought crammed into the bottom-left corner" — a real
+ * complaint once ELK's layout meant most diagrams render far wider than
+ * the legend card itself needs, leaving visible empty space next to it).
+ * Items (the solid/dashed caption, then one entry per category showing its
+ * solid-changed/dashed-context swatch pair side by side — unchanged from
+ * round 3) are packed left-to-right and wrap onto additional rows only if
+ * the diagram is too narrow to fit them on one line, so a normal-width
+ * diagram gets one compact caption bar and a cramped one still gets a
+ * legible legend rather than either overflow or a mis-sized card. Drawn
+ * with a visible top border and a background matching the diagram's own
+ * subgraph fill, so it reads as an integrated footer panel — the same
+ * visual language as a subgraph box — not a separately-styled floating
+ * element. Server-side post-processing (rather than asking the LLM to draw
+ * it) means it's always present, always correct, and can never be
+ * corrupted by model output. A no-op for sequenceDiagram, where this
+ * category system doesn't apply.
  */
 export function appendLegend(svg: string, diagramType: "flowchart" | "sequence"): string {
   if (diagramType !== "flowchart") {
@@ -272,43 +290,90 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
   const rowHeight = 26;
   const swatchSize = 12;
   const swatchGap = 6;
+  const labelGap = 8; // gap between a category's last swatch and its label
+  const itemGap = 28; // gap between successive items on the same row
   const fontSize = 12;
-  const cardPadding = 14;
-  const labelColX = cardPadding + 92; // fixed column so every row's swatches line up
+  const outerPadding = 14;
 
-  // A row's width is driven by however many swatches it has (1 or 2) plus
-  // its label length — used only to size the card, since layout itself is
-  // a fixed label column followed by swatches, not a wrapping flow.
-  const widestLabelChars = Math.max(...LEGEND_ROWS.map((r) => r.label.length));
-  const neededWidth = labelColX + widestLabelChars * (fontSize * 0.56) + cardPadding;
-  const cardWidth = Math.max(Math.min(width, neededWidth), 320);
+  type Entry =
+    | { kind: "caption"; width: number }
+    | { kind: "category"; item: LegendItem; width: number };
 
-  const rows = LEGEND_ROWS.map((row, i) => {
-    const y = cardPadding + i * rowHeight;
-    let swatchesSvg = "";
-    if (row.swatches.length > 0) {
-      let sx = cardPadding;
-      swatchesSvg = row.swatches
-        .map((sw) => {
-          const dash = sw.dashed ? ' stroke-dasharray="3 2"' : "";
-          const rect = `<rect x="${sx}" y="${y + (rowHeight - swatchSize) / 2}" width="${swatchSize}" height="${swatchSize}" rx="2" fill="${sw.fill}" stroke="${sw.stroke}" stroke-width="1.5"${dash}/>`;
-          sx += swatchSize + swatchGap;
-          return rect;
+  function categoryWidth(item: LegendItem): number {
+    const swatchesWidth = item.swatches.length * swatchSize + Math.max(item.swatches.length - 1, 0) * swatchGap;
+    return swatchesWidth + labelGap + estTextWidth(item.label, fontSize);
+  }
+
+  const entries: Entry[] = [
+    { kind: "caption", width: estTextWidth(LEGEND_CAPTION, fontSize) },
+    ...LEGEND_ITEMS.map((item) => ({ kind: "category" as const, item, width: categoryWidth(item) })),
+  ];
+
+  // The footer spans the diagram's own width (never narrower — that's the
+  // whole fix) but never shrinks below a sensible floor either, so a tiny
+  // 2-3-node diagram doesn't get a comically narrow, many-row legend.
+  const newWidth = Math.max(width, 320);
+  const usableWidth = newWidth - outerPadding * 2;
+
+  // Greedy left-to-right wrap: add each entry to the current row unless
+  // doing so would overflow usableWidth AND the row already has something
+  // in it (a single entry is always placed even if it alone overflows —
+  // never split an item's own content, just let it run slightly long
+  // rather than produce an empty row or truncated swatch/label).
+  const rows: Entry[][] = [];
+  let currentRow: Entry[] = [];
+  let currentRowWidth = 0;
+  for (const entry of entries) {
+    const gap = currentRow.length > 0 ? itemGap : 0;
+    if (currentRow.length > 0 && currentRowWidth + gap + entry.width > usableWidth) {
+      rows.push(currentRow);
+      currentRow = [];
+      currentRowWidth = 0;
+    }
+    currentRowWidth += (currentRow.length > 0 ? itemGap : 0) + entry.width;
+    currentRow.push(entry);
+  }
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  const legendContentHeight = rows.length * rowHeight;
+  const legendHeight = legendContentHeight + outerPadding * 2;
+  const newHeight = height + legendHeight;
+
+  const rowsSvg = rows
+    .map((row, rowIndex) => {
+      const rowContentWidth = row.reduce((sum, e, i) => sum + e.width + (i > 0 ? itemGap : 0), 0);
+      // Centered, not left-pinned: with items now wrapping to fit the
+      // footer's own width, centering reads as a deliberately laid-out
+      // strip rather than text stranded at one edge.
+      let x = Math.max((newWidth - rowContentWidth) / 2, outerPadding);
+      const y = outerPadding + rowIndex * rowHeight;
+      return row
+        .map((entry) => {
+          if (entry.kind === "caption") {
+            const svgText = `<text x="${x}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="#8b949e">${escapeXml(LEGEND_CAPTION)}</text>`;
+            x += entry.width + itemGap;
+            return svgText;
+          }
+          let sx = x;
+          const swatchesSvg = entry.item.swatches
+            .map((sw) => {
+              const dash = sw.dashed ? ' stroke-dasharray="3 2"' : "";
+              const rect = `<rect x="${sx}" y="${y + (rowHeight - swatchSize) / 2}" width="${swatchSize}" height="${swatchSize}" rx="2" fill="${sw.fill}" stroke="${sw.stroke}" stroke-width="1.5"${dash}/>`;
+              sx += swatchSize + swatchGap;
+              return rect;
+            })
+            .join("");
+          const labelX = sx - swatchGap + labelGap;
+          const label = `<text x="${labelX}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="#e6edf3">${escapeXml(entry.item.label)}</text>`;
+          x += entry.width + itemGap;
+          return swatchesSvg + label;
         })
         .join("");
-    }
-    const labelX = row.swatches.length > 0 ? labelColX : cardPadding;
-    const labelColor = row.swatches.length === 0 ? "#8b949e" : "#e6edf3";
-    const label = `<text x="${labelX}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="${labelColor}">${escapeXml(row.label)}</text>`;
-    return swatchesSvg + label;
-  }).join("");
+    })
+    .join("");
 
-  const cardHeight = cardPadding + LEGEND_ROWS.length * rowHeight;
-  const outerMargin = 10;
-  const legendHeight = cardHeight + outerMargin * 2;
-
-  const newHeight = height + legendHeight;
-  const newWidth = Math.max(width, cardWidth + outerMargin * 2);
   // mmdc's root <svg> also carries a `max-width: <old-width>px` inline
   // style alongside width="100%" — since the aspect ratio changes when the
   // legend adds height (and possibly width), that style has to move with
@@ -321,12 +386,12 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
     )
     .replace(/max-width:\s*[\d.]+px/, `max-width: ${newWidth}px`);
 
-  const legendGroup = `<g transform="translate(0, ${height})">` +
-    `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#0d1117"/>` +
-    `<g transform="translate(${outerMargin}, ${outerMargin})">` +
-    `<rect x="0" y="0" width="${cardWidth}" height="${cardHeight}" rx="6" fill="#161b22" stroke="#6e7681" stroke-width="1"/>` +
-    rows +
-    `</g></g>`;
+  const legendGroup =
+    `<g transform="translate(0, ${height})">` +
+    `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#161b22"/>` +
+    `<line x1="0" y1="0" x2="${newWidth}" y2="0" stroke="#6e7681" stroke-width="1"/>` +
+    rowsSvg +
+    `</g>`;
 
   return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);
 }
