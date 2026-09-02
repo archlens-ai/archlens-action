@@ -713,7 +713,83 @@ card with dead space beside it.
 **Status toward the score >= 9 gate**: every item-15 finding is now
 addressed except the token-overlap misclassification limitation (a
 disclosed, accepted limitation of the deterministic classifier, not a
-regression). Next step is a fresh round-6 adversarial review against
-freshly generated screenshots (never reused stale ones — the explicit
-lesson from round 5's own wrong finding), repeated until it scores >= 9,
-before any payment/billing work per the user's explicit instruction.
+regression).
+
+## 19. Round 6 adversarial review (2026-09-02) — 4/10, would not approve; three real bugs found and fixed
+
+Ran a fresh, context-free review against 5 FRESHLY generated screenshots
+(the 10-file stress test, both real-repo diffs, a removed-state example,
+and a sequence diagram — none reused from earlier rounds, per item 15's
+own lesson). Scored **4/10**, would not approve shipping. Verified each
+claim against the actual generated mermaid source before acting on it —
+three were real:
+
+1. **Removed-edge glow, still broken in a new way.** Item 16 fixed
+   edges where BOTH endpoints were `removed`; this review caught the
+   real FastAPI diagram rendering `prestart.sh -->|calls|
+   backend_pre_start.py` as a bold, glowing, actively-animated edge —
+   `backend_pre_start.py` is dashed-red "removed," `prestart.sh` isn't.
+   Review's words: "a file cannot simultaneously be deleted by this PR
+   and actively invoked by live code in the same diagram." Correct, and
+   the underlying logic doesn't hold up either — a `removed` node no
+   longer exists in the repo, so no edge touching it, from either
+   direction, can represent live data flow. Fixed:
+   `touchesRemovedNode()` now triggers on EITHER endpoint, not both.
+2. **A modified file classified as removed.** `db.py` (diff: gained
+   `pool_pre_ping=True`, never deleted) was rendered dashed-red
+   "removed" — confirmed against the real mermaid source
+   (`class DBCore removed`). Root cause: the LLM appears to cascade
+   `removed` from a genuinely-deleted file (`backend_pre_start.py`) onto
+   files that merely reference it, rather than checking each node's OWN
+   deletion status. `reconcileDiffClassification` in diff-classify.ts
+   doesn't correct this — it deliberately leaves any model-assigned
+   `removed` line untouched (by design, for the plain/Context axis it
+   otherwise governs), so this passed straight through to the rendered
+   diagram uncaught. Fixed at the prompt level (llm.ts's SYSTEM_PROMPT):
+   explicit statement that `removed` describes only a node's own
+   deleted file/definition, a worked counter-example matching this exact
+   shape, and an explicit default-away-from-removed-when-uncertain rule.
+   Not a deterministic guard — a prompt fix reduces but can't fully
+   eliminate this class of LLM error; flagged as a known residual risk,
+   not claimed solved.
+3. **Category-definition drift.** `pyproject.toml`/`uv.lock` colored
+   `datastore` (purple) despite being config/lockfiles, not application
+   data storage. Separately, on the NestJS example, four `*.service`
+   files were colored `endpoint` (blue) while two other `*.service`
+   files were `logic` (green) — same naming pattern, no visible reason.
+   Fixed at the prompt level: tightened the endpoint/logic/datastore
+   definitions with explicit inclusions/exclusions (datastore: "NEVER a
+   config file... even one that lists a database driver as a
+   dependency"; endpoint: "a file merely named `*Service` ... is NOT an
+   endpoint just because it's reachable from one").
+
+**Re-verified on the same real diffs after the fix** (not just unit
+tests): the FastAPI diagram now shows dim/dashed edges into both
+removed nodes, `pyproject.toml` as logic, `db.py` correctly out of the
+removed category; the NestJS diagram now colors all `*.service` files
+consistently as logic. 39 mermaid tests (rewrote the removed-edge tests
+to cover both-removed/one-removed/neither-removed explicitly) + full
+133-test suite pass.
+
+**Not fixed, disclosed rather than ignored**: the review also flagged
+(a) real-world diagrams rendering visibly smaller/more cramped than
+curated synthetic examples at high node-density/low-rank-count shapes
+(the NestJS example's natural SVG size was 300x64 — very wide, very
+short — making per-node text small once laid out; likely an ELK-
+aspect-ratio characteristic at this specific graph shape, not yet
+investigated), (b) the sequence-diagram mode giving no visual
+distinction between new-this-PR and pre-existing PARTICIPANTS
+(diff-awareness there is currently message-level only, via the `rect`
+highlight, which is real but subtle at 18% opacity — confirmed still
+renders correctly via direct pixel sampling, not just assumed), and (c)
+some remaining self-loop edges and repository/seed-service
+categorization calls in the NestJS example that are debatable but not
+clearly wrong. None of these were the review's stated top blockers;
+flagged for the next round rather than chased under time pressure in
+this one.
+
+**Status toward the score >= 9 gate**: three concrete, verified bugs
+fixed this round. A follow-up review against fresh screenshots
+reflecting these fixes is the immediate next step, and should continue
+until it scores >= 9, before any payment/billing work per the user's
+explicit instruction.
