@@ -583,3 +583,56 @@ its own `<g class="node ... ">` id, then look up each edge's source/
 target against that map before deciding its style), which is a real,
 scoped change, not a one-line fix. Flagged for the next round of visual
 work on this, alongside the other three findings above.
+
+## 16. Removed-edge glow bug (item 15's follow-up) fixed and re-verified; explicit governing constraint for current work (2026-09-02)
+
+**Governing constraint, direct user instruction:** "we will do the
+payment integration when the score reaches >=9 got, it wont sell until
+it is really helpfull." No Stripe/billing work happens until an
+adversarial review scores this >= 9/10. Everything below is in direct
+service of that gate — closing real quality gaps, not new features.
+
+**Fix for item 15's follow-up bug** (edges between two `removed` nodes
+rendering with the same active glow/animated-arrow treatment as a live
+edge): `applyBoldGlowStyling()` now builds a node-name -> category map by
+parsing every node's `<g class="node default {category}" id="{svgId}-
+flowchart-{Name}-{idx}">` tag, cross-references each edge's `data-id`
+(`L_{source}_{target}_{index}`) against that map, and tags an edge whose
+BOTH endpoints are `removed` with a marker class
+(`archlens-removed-edge`) that gets its own dim/dashed/no-glow rule
+matching the removed-node palette instead of the blanket active-edge
+rule. `injectFlowRunners()` reads the same marker back off the tag
+(rather than re-deriving categories) and skips generating an animated
+runner for those edges too — same root cause, fixed alongside it.
+
+Verified, not just asserted:
+- 5 new tests (`backend/tests/mermaid.test.ts`) — 2 unit tests against
+  synthetic SVG shaped exactly like a real render (confirmed against
+  `scripts/.dry-run-output/removed-state-v2-diagram.svg` before writing
+  them, not assumed), 1 unit test on `injectFlowRunners` honoring the
+  marker, 1 full end-to-end integration test through the real Puppeteer/
+  ELK harness. Proved the tests actually catch the regression: reverted
+  the fix, confirmed all 4 relevant tests fail with the expected
+  assertions, restored the fix, confirmed all pass again (same discipline
+  as item 14's xmlns:xlink regression test).
+- Full suite: 130/130 tests pass.
+- Regenerated a **fresh** real removed-state example end-to-end (real
+  Anthropic call, real classifier, real ELK render) — deliberately with
+  THREE removed-to-removed edges and ONE live edge in the same diagram
+  this time, not the single-edge case from item 15. Screenshotted exactly
+  as GitHub embeds it (`scripts/.dry-run-output/removed-state-v2-
+  final.png`): the 3 removed edges render dim/dashed/red/static, the 1
+  live edge stays bold/blue/glowing/animated — a stark, correct visual
+  contrast.
+- Confirmed no regression on a diagram with zero `removed` nodes (the
+  10-file stress test, re-rendered): 0 edges tagged, every edge still
+  gets its glow and animated runner exactly as before.
+
+**Remaining open items from item 15, still unaddressed** (tracked as the
+next steps toward the score->=9 gate): low-contrast subgraph borders,
+ELK's occasional perimeter-hugging "spaghetti" edge routing, the legend's
+boxed-afterthought placement, and the token-overlap misclassification
+limitation (disclosed, not newly regressed). A fresh round-6 adversarial
+review — against freshly generated screenshots, per item 15's own
+lesson — is the next step once the polish items above are addressed, and
+should repeat until it scores >= 9.
