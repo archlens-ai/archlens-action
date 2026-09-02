@@ -328,6 +328,64 @@ const GLOW_FILTER_ID = "archlens-glow";
 // never zero.
 const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" filterUnits="userSpaceOnUse" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="archlens-blur"/><feMerge><feMergeNode in="archlens-blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
 
+// Marker class stamped onto an edge's own <path class="..."> attribute (by
+// applyBoldGlowStyling(), the first post-processing step to run) when BOTH
+// its endpoints are `removed`-category nodes. injectFlowRunners() — which
+// runs immediately after in the pipeline — reads this same marker back off
+// the tag rather than re-deriving node categories itself, so there's one
+// source of truth for "is this a removed-to-removed edge" shared by both
+// functions.
+const REMOVED_EDGE_CLASS = "archlens-removed-edge";
+
+/**
+ * Reads every flowchart node's assigned category straight out of the
+ * rendered SVG: Mermaid emits each node as `<g class="node default
+ * {category}" id="{svgId}-flowchart-{NodeName}-{idx}" ...>` (confirmed
+ * against a real render), so the category is the one class token besides
+ * the fixed "node"/"default" pair, and the node's own Mermaid id is
+ * recovered from its id attribute by stripping the "-flowchart-" prefix and
+ * the trailing "-{idx}" mermaid appends for uniqueness.
+ */
+function extractNodeCategories(svg: string): Map<string, string> {
+  const categories = new Map<string, string>();
+  const nodeTagRe = /<g class="(node[^"]*)"[^>]*\bid="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = nodeTagRe.exec(svg))) {
+    const classTokens = match[1]!.split(/\s+/);
+    const category = classTokens.find((t) => t !== "node" && t !== "default");
+    const nameMatch = /-flowchart-(.+)-\d+$/.exec(match[2]!);
+    if (category && nameMatch) {
+      categories.set(nameMatch[1]!, category);
+    }
+  }
+  return categories;
+}
+
+/**
+ * Determines whether an edge (identified by its `data-id`, always
+ * `L_{source}_{target}_{index}` — confirmed against a real render) connects
+ * two nodes that are BOTH categorized `removed`. Node names can themselves
+ * contain underscores, so `source`/`target` can't just be split on "_" —
+ * instead this tries every known node name as a candidate source prefix and
+ * accepts the split only when the remainder (minus the trailing index) is
+ * *also* a known node name, which is unambiguous in practice since a real
+ * split must land on two real node names.
+ */
+function isRemovedToRemovedEdge(dataId: string | null, categories: Map<string, string>): boolean {
+  if (!dataId) return false;
+  const m = /^L_(.+)_\d+$/.exec(dataId);
+  if (!m) return false;
+  const sourceAndTarget = m[1]!;
+  for (const source of categories.keys()) {
+    if (!sourceAndTarget.startsWith(`${source}_`)) continue;
+    const target = sourceAndTarget.slice(source.length + 1);
+    if (categories.has(target)) {
+      return categories.get(source) === "removed" && categories.get(target) === "removed";
+    }
+  }
+  return false;
+}
+
 /**
  * User ask (2026-08-31): "make the text and line bright and bold... clearly
  * visible", plus the glow half of the animated-flow request. mmdc's stock
@@ -347,17 +405,36 @@ const GLOW_DEFS = `<defs><filter id="${GLOW_FILTER_ID}" filterUnits="userSpaceOn
  * native `<animateMotion>` — see injectFlowRunners() below, which reads
  * each edge's own `d` geometry straight out of the rendered SVG rather
  * than asking Mermaid/the model to cooperate with anything.
+ *
+ * Bug fix (found generating a real removed-state example, 2026-09-02): the
+ * blanket `.flowchart-link` rule below used to apply to every edge with no
+ * awareness of what it connects, so a link between two nodes THIS PR
+ * DELETES rendered with the exact same vivid "alive and pulsing" glow as a
+ * link between two brand-new nodes — flatly contradicting the dashed-red
+ * "gone" styling already applied to the nodes themselves. Edges whose
+ * endpoints are both `removed` are now re-tagged with REMOVED_EDGE_CLASS
+ * and given their own rule (declared after the general one, so its
+ * `!important`s win) matching the removed-node palette: dim red, dashed, no
+ * glow — "this connection is gone too," not "this connection is thriving."
  */
 export function applyBoldGlowStyling(svg: string): string {
+  const nodeCategories = extractNodeCategories(svg);
+  const markedSvg = svg.replace(EDGE_PATH_TAG_RE, (tag) => {
+    const dataId = extractAttr(tag, "data-id");
+    if (!isRemovedToRemovedEdge(dataId, nodeCategories)) return tag;
+    return tag.replace(/\bclass="([^"]*)"/, (_m, cls: string) => `class="${cls} ${REMOVED_EDGE_CLASS}"`);
+  });
+
   const overrideStyle =
     `<style>` +
     `text{font-weight:700 !important;}` +
     `.flowchart-link{stroke-width:2.5px !important;stroke-dasharray:none !important;filter:url(#${GLOW_FILTER_ID});}` +
+    `.${REMOVED_EDGE_CLASS}{stroke:#f85149 !important;stroke-width:1.5px !important;stroke-dasharray:3 3 !important;filter:none !important;opacity:0.7;}` +
     `.messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.edgeLabel{font-weight:700 !important;}` +
     `</style>`;
 
-  return svg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
+  return markedSvg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
 }
 
 // Matches just the opening `<path ...>` tag, regardless of whether it's
@@ -387,6 +464,13 @@ function extractAttr(tag: string, attr: string): string | null {
  * the path's own tangent as it moves, so it still reads as "an arrow,"
  * not just a dot. Flowchart-only: sequenceDiagram message lines don't
  * expose an equivalent stable per-edge id in mmdc's output.
+ *
+ * Skips edges tagged REMOVED_EDGE_CLASS by applyBoldGlowStyling() (which
+ * runs immediately before this in the pipeline, see renderMermaidToSvg): a
+ * glowing arrowhead animating "live traffic" along a connection this PR
+ * deletes is exactly backwards, the same bug the glow/bold override itself
+ * had — found and fixed alongside it rather than separately, since it's the
+ * same root cause (no edge here was ever aware of what it connects).
  */
 export function injectFlowRunners(svg: string): string {
   const edgeTags = svg.match(EDGE_PATH_TAG_RE) ?? [];
@@ -398,6 +482,8 @@ export function injectFlowRunners(svg: string): string {
     .map((tag) => {
       const id = extractAttr(tag, "id");
       if (!id) return null;
+      const classAttr = extractAttr(tag, "class") ?? "";
+      if (classAttr.split(/\s+/).includes(REMOVED_EDGE_CLASS)) return null;
       return (
         `<path d="M-5,-4 L6,0 L-5,4 L-2,0 Z" fill="#79c0ff" stroke="#0d1117" stroke-width="0.75"` +
         ` filter="url(#${GLOW_FILTER_ID})">` +
