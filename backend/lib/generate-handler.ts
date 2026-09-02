@@ -1,6 +1,6 @@
 import { buildPrompt, buildRepairPrompt, type DiffFile, type DiagramTypeHint, type LlmProvider } from "./llm.js";
 import { validateMermaidSyntax } from "./mermaid.js";
-import { reconcileDiffClassification } from "./diff-classify.js";
+import { reconcileDiffClassification, stripSelfLoopEdges, assignMissingCategories } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
 
@@ -112,6 +112,23 @@ export async function handleGenerateRequest(
     // real, reviewer-caught, self-verified failure mode where the model
     // marked every node "changed" on a realistic diff).
     mermaidSource = reconcileDiffClassification(mermaidSource, body.files);
+
+    // Deterministic backstop, same reasoning as above: a real generated
+    // diagram (NestJS real-repo test) had 6 of its 14 edges be meaningless
+    // self-loops (`RoleSeedService -->|accesses| RoleSeedService`) despite
+    // the SYSTEM_PROMPT explicitly forbidding them — the prompt rule alone
+    // wasn't reliable enough on the smaller model this product actually
+    // runs in production, so this strips any that slip through.
+    mermaidSource = stripSelfLoopEdges(mermaidSource);
+
+    // Deterministic backstop, same reasoning again: a real generated
+    // diagram (live-scale stress test) declared and wired up
+    // `RefundWorker` but never gave it a `class` line at all — mermaid
+    // silently falls back to the theme's primaryBorderColor for an
+    // unclassed node, which happens to be the exact same blue as
+    // `endpoint`, so a background worker rendered as if it were a real API
+    // route. Catches any node left with no category whatsoever.
+    mermaidSource = assignMissingCategories(mermaidSource);
 
     const { svg } = await deps.render(mermaidSource);
     const svgUrl = await deps.storeSvg(hash, svg);

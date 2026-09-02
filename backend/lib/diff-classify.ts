@@ -13,7 +13,7 @@
  * This module recomputes "was this node actually touched by the diff" from
  * the diff patches themselves — a lookup, not an inference — and overrides
  * whatever changed/Context/removed suffix the model assigned. The model
- * still decides the *base* category (endpoint/logic/datastore), which
+ * still decides the *base* category (endpoint/logic/datastore/external), which
  * layer a node belongs to, and the overall graph shape; it just no longer
  * gets the deciding vote on "is this new."
  *
@@ -64,6 +64,14 @@ const STOPWORDS = new Set([
   "not", "null", "create", "alter", "add", "drop", "get", "post", "put",
   "delete", "patch", "req", "res", "id", "into", "values", "set", "where",
   "type", "types", "int", "text", "true", "false",
+  // Round-7 addition: tokenize()'s minimum token length dropped from 3
+  // chars to 2 (see there for why — "db.py" was a real, confirmed false
+  // negative), which now lets through short English prose/glue words that
+  // never carried signal at 3+ chars. These are generic connective words,
+  // never a meaningful identifier on their own, so excluding them keeps
+  // the 2-char lookup from matching on noise.
+  "to", "is", "in", "on", "at", "by", "as", "or", "if", "it", "an", "be",
+  "do", "no", "so", "up", "of", "we", "he",
 ]);
 
 // Architectural-layer suffixes that show up in nearly every file name and
@@ -139,15 +147,26 @@ function singularize(word: string): string | null {
   return null;
 }
 
+// Round-7 fix: both patterns below required 3+ total characters
+// (`{2,}` after a mandatory first char) until a real, confirmed false
+// negative was found on the product's own FastAPI real-repo test —
+// `db.py`'s basename tokenizes to "db," exactly 2 characters, so it NEVER
+// produced any token at all, meaning a `DBConfig["db.py..."]` node could
+// never match its own file's basename-derived changed-evidence no matter
+// what (the same failure independently sank the round-7 "removed" rescue
+// logic below, which depends on this same token overlap). Lowered to 2
+// chars minimum (`{1,}`) so short-but-real identifiers like "db", "io",
+// "ui", "os" tokenize — the new short-word STOPWORDS entries above guard
+// against the generic English glue-words this newly admits.
 function tokenize(text: string): string[] {
-  const wholeWordTokens = text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) ?? [];
+  const wholeWordTokens = text.toLowerCase().match(/[a-z_][a-z0-9_]{1,}/g) ?? [];
 
   const decomposed = text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .replace(/[._-]+/g, " ")
     .toLowerCase();
-  const splitTokens = decomposed.match(/[a-z][a-z0-9]{2,}/g) ?? [];
+  const splitTokens = decomposed.match(/[a-z][a-z0-9]{1,}/g) ?? [];
 
   const base = new Set([...wholeWordTokens, ...splitTokens]);
   for (const t of [...base]) {
@@ -249,13 +268,20 @@ export function computeDiffTouchState(files: DiffPatchFile[]): {
   return { changed: addedTokens, removed: removedOnly };
 }
 
-const BASE_CATEGORIES = ["endpoint", "logic", "datastore"];
+// Round-7 addition: `external` (a third-party dependency this system only
+// calls — a payment gateway, an outside notification/message provider —
+// see mermaid.ts's CATEGORY_CLASS_DEFS for why this needed to be its own
+// base category rather than a datastore variant) gets the same diff-aware
+// changed/Context/removed reconciliation as endpoint/logic/datastore: an
+// external dependency this PR newly wires up should read as "changed," not
+// silently downgraded to Context just because it's a fourth category.
+const BASE_CATEGORIES = ["endpoint", "logic", "datastore", "external"];
 
-/** Returns the base category (endpoint/logic/datastore) for a plain or
- * *Context-suffixed category, or null for anything else (removed, any
- * *Region category, or an unrecognized string) — those are left untouched
- * by reconciliation since there's no base to reconstruct or, for Region,
- * no diff-state concept that applies. */
+/** Returns the base category (endpoint/logic/datastore/external) for a
+ * plain or *Context-suffixed category, or null for anything else (removed,
+ * any *Region category, or an unrecognized string) — those are left
+ * untouched by reconciliation since there's no base to reconstruct or, for
+ * Region, no diff-state concept that applies. */
 function baseCategoryOf(category: string): string | null {
   for (const base of BASE_CATEGORIES) {
     if (category === base || category === `${base}Context`) return base;
@@ -265,14 +291,40 @@ function baseCategoryOf(category: string): string | null {
 
 const CLASS_LINE_RE = /^(\s*)class\s+([\w,\s]+?)\s+([A-Za-z]+)\s*$/;
 
+// Round-7 addition: every category keyword this product emits, used to
+// catch a confirmed, real hallucination — a genuine Anthropic-generated
+// diagram (FastAPI real-repo test, round 8) contained the literal line
+// `class removed removed`, referencing a node ID that was never declared
+// anywhere (no `removed["..."]`) and happens to be spelled identically to
+// the category keyword itself. Almost certainly the model meant "the
+// removed thing" as a concept, not a real node — a class line whose ONLY
+// id is one of these reserved words, with no matching node declaration, is
+// dropped outright rather than rendered as a dangling, meaningless
+// reference.
+const RESERVED_CATEGORY_KEYWORDS = new Set([
+  "endpoint",
+  "logic",
+  "datastore",
+  "external",
+  "removed",
+  "endpointContext",
+  "logicContext",
+  "datastoreContext",
+  "externalContext",
+  "endpointRegion",
+  "logicRegion",
+  "datastoreRegion",
+  "externalRegion",
+]);
+
 /**
  * Rewrites a flowchart's `class NodeId,NodeId2 <category>` assignments so
  * the changed/Context/removed suffix reflects what the diff actually
  * touched, not what the model guessed. Runs on raw LLM output, before
  * applyArchLensStyling() strips/replaces classDefs — this only ever
- * touches `class` lines, never classDef, and only for the six
- * diff-state-bearing categories (endpoint/logic/datastore and their
- * Context variants); Region-category lines (subgraph coloring) and
+ * touches `class` lines, never classDef, and only for the eight
+ * diff-state-bearing categories (endpoint/logic/datastore/external and
+ * their Context variants); Region-category lines (subgraph coloring) and
  * `removed` lines the model already assigned are left as-is. A no-op for
  * sequenceDiagram, where this category system doesn't exist.
  */
@@ -303,13 +355,18 @@ export function reconcileDiffClassification(
   const lines = source.split("\n");
   const outLines: Array<string | null> = [...lines];
   const additions: string[] = [];
+  // Tracks any real edit, not just `additions.length` — a line that's
+  // purely DROPPED (the hallucinated `class removed removed` case below,
+  // where a garbage id is removed and nothing takes its place) changes
+  // outLines without ever pushing to `additions`, so `additions.length`
+  // alone would miss it and the function would wrongly return the
+  // untouched original source.
+  let anyLineChanged = false;
 
   for (let i = 0; i < lines.length; i++) {
     const match = CLASS_LINE_RE.exec(lines[i]!);
     if (!match) continue;
     const [, indent, idsRaw, category] = match;
-    const base = baseCategoryOf(category!);
-    if (!base) continue; // Region / removed / unrecognized — leave untouched
 
     const ids = idsRaw!
       .split(",")
@@ -318,6 +375,61 @@ export function reconcileDiffClassification(
 
     const keepIds: string[] = [];
     const regrouped = new Map<string, string[]>();
+
+    // Round-7 addition: `removed` gets its own reconciliation pass, not the
+    // free pass Region/unrecognized categories get. A real generated
+    // diagram (FastAPI real-repo test, round 8) re-marked db.py `removed`
+    // even though the diff only modified it — the exact false-positive-
+    // cascading failure mode the SYSTEM_PROMPT already warns against (see
+    // llm.ts), recurring despite that prompt fix because a smaller model's
+    // instruction-following isn't perfectly reliable run to run. This
+    // catches it deterministically: a node whose label has real evidence
+    // of being CHANGED (not just possibly-removed) cannot have been
+    // deleted by this same diff, so it's rescued to `logicContext` rather
+    // than left rendered as torn out of the codebase — a live, merely-
+    // modified file being shown as deleted is a strictly worse, more
+    // actively misleading error than one file's category color being an
+    // imperfect guess. `logicContext` is the deliberate, disclosed choice
+    // here (not a fully general "recover the true category" fix, which
+    // would need information `removed` already discarded): every
+    // confirmed real occurrence of this bug so far has been a config/
+    // settings/infra file, which `logic` already explicitly covers, and it
+    // reads as the least alarming, most defensible neutral fallback for a
+    // node we can positively prove still exists but can no longer classify
+    // precisely.
+    if (category === "removed") {
+      let droppedAny = false;
+      for (const id of ids) {
+        if (RESERVED_CATEGORY_KEYWORDS.has(id) && !nodeLabels.has(id)) {
+          droppedAny = true; // hallucinated self-reference (e.g. `class removed removed`) — drop it
+          continue;
+        }
+        const label = nodeLabels.get(id);
+        if (!label) {
+          keepIds.push(id); // no matching node declaration — can't reconcile blind
+          continue;
+        }
+        const tokens = tokenize(label);
+        const hasChanged = tokens.some((t) => changed.has(t));
+        if (hasChanged) {
+          if (!regrouped.has("logicContext")) regrouped.set("logicContext", []);
+          regrouped.get("logicContext")!.push(id);
+        } else {
+          keepIds.push(id); // genuine removal — no evidence it's still present
+        }
+      }
+
+      if (regrouped.size === 0 && !droppedAny) continue; // nothing to change on this line
+      anyLineChanged = true;
+      outLines[i] = keepIds.length > 0 ? `${indent}class ${keepIds.join(",")} ${category}` : null;
+      for (const [newCategory, idsForCat] of regrouped) {
+        additions.push(`class ${idsForCat.join(",")} ${newCategory}`);
+      }
+      continue;
+    }
+
+    const base = baseCategoryOf(category!);
+    if (!base) continue; // Region / unrecognized — leave untouched
 
     for (const id of ids) {
       const label = nodeLabels.get(id);
@@ -344,16 +456,127 @@ export function reconcileDiffClassification(
 
     if (regrouped.size === 0) continue; // nothing to change on this line
 
+    anyLineChanged = true;
     outLines[i] = keepIds.length > 0 ? `${indent}class ${keepIds.join(",")} ${category}` : null;
     for (const [newCategory, idsForCat] of regrouped) {
       additions.push(`class ${idsForCat.join(",")} ${newCategory}`);
     }
   }
 
-  if (additions.length === 0) {
+  if (!anyLineChanged) {
     return source; // no reconciliation needed — don't touch the source at all
   }
 
   const rebuilt = outLines.filter((l): l is string => l !== null).join("\n");
-  return `${rebuilt.trimEnd()}\n${additions.join("\n")}\n`;
+  return additions.length > 0 ? `${rebuilt.trimEnd()}\n${additions.join("\n")}\n` : `${rebuilt.trimEnd()}\n`;
+}
+
+// Matches a flowchart edge line and captures the raw source/target tokens,
+// each optionally followed by an inline `["Shape Label"]` node declaration
+// mermaid allows directly on an edge line (`A["x"] --> B["y"]`). Covers the
+// arrow variants mermaid's flowchart syntax supports (solid/dotted/thick,
+// with or without an `|label|`); every real generated diagram observed so
+// far only ever used `-->`, but the others cost nothing to also catch.
+const FLOWCHART_EDGE_RE =
+  /^(\s*)(\w+)(?:\[[^\]]*\])?\s*(?:--[ox>]|-\.-[ox>]?|==[ox>])\s*(?:\|[^|]*\|\s*)?(\w+)(?:\[[^\]]*\])?\s*$/;
+
+/**
+ * Deterministically drops any flowchart edge whose source and target are
+ * the SAME node (`A -->|uses| A`) — a real, confirmed failure mode found
+ * in a genuine Anthropic-generated diagram (NestJS real-repo test, round
+ * 7): asked to keep every node connected, the model invented meaningless
+ * self-loop edges (`RoleSeedService -->|accesses| RoleSeedService`,
+ * repeated for 6 of that diagram's 14 edges) for nodes that had no real
+ * caller/callee relationship to show, apparently just to justify the
+ * node's presence. A self-loop conveys no actual relationship — the
+ * node's own category color (plain vs. Context) already communicates "this
+ * PR touched this" without any edge at all — and it silently inflates edge
+ * count and diagram width for zero information, worsening exactly the
+ * legibility-at-GitHub's-fixed-comment-width problem a sprawling diagram
+ * already has. This runs as a deterministic backstop alongside the
+ * SYSTEM_PROMPT rule against self-loops (see llm.ts) rather than instead of
+ * it, the same reasoning as reconcileDiffClassification above: a prompt
+ * instruction alone isn't reliable enough on its own (this exact bug was
+ * found on the smaller/cheaper model this product actually runs against in
+ * production, not a hypothetical). A no-op for sequenceDiagram, where a
+ * self-message (`A->>A: ...`) is a legitimate, meaningful construct, not a
+ * mistake to strip.
+ */
+export function stripSelfLoopEdges(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+  const kept = lines.filter((line) => {
+    const m = FLOWCHART_EDGE_RE.exec(line);
+    return !(m && m[2] === m[3]);
+  });
+
+  if (kept.length === lines.length) {
+    return source; // nothing stripped — don't touch the source at all
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Deterministically assigns `logicContext` to any flowchart node that's
+ * referenced (declared with a `["label"]` shape, or used as an edge
+ * endpoint) but never appears in ANY `class` line at all — a real,
+ * confirmed failure found in a genuine Anthropic-generated diagram (the
+ * 10-file live-scale stress test, round 8): `RefundWorker["refundWorker"]`
+ * was declared and wired into two edges but the model's own six `class`
+ * lines never mentioned it. mermaid doesn't error on an unclassed node —
+ * it silently falls back to the theme's base `primaryBorderColor`, which
+ * happens to be the exact same blue ArchLens uses for the `endpoint`
+ * category (see ARCHLENS_THEME_CONFIG in mermaid.ts). The practical effect
+ * is actively misleading, not merely undecorated: a background worker
+ * rendered in "endpoint blue" reads to a reviewer as a real API
+ * route/controller, a wrong claim about the architecture the whole product
+ * exists to represent accurately, not a cosmetic gap. `logicContext` is
+ * used for the same reason it's the fallback everywhere else in this
+ * module (see the `removed`-rescue above): the neutral, least-alarming
+ * "we can't be sure this is new" bucket, and specifically NOT related to
+ * `primaryBorderColor`'s blue, so a rescued node can never again be
+ * mistaken for a real endpoint. A no-op for sequenceDiagram, where
+ * `class` doesn't apply.
+ */
+export function assignMissingCategories(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const subgraphIds = new Set<string>();
+  for (const m of source.matchAll(/subgraph\s+(\w+)/g)) {
+    subgraphIds.add(m[1]!);
+  }
+
+  const referenced = new Set<string>();
+  for (const m of source.matchAll(/(\w+)\s*\[\s*"[^"]*"\s*\]/g)) {
+    if (!subgraphIds.has(m[1]!)) referenced.add(m[1]!);
+  }
+  for (const line of source.split("\n")) {
+    const m = FLOWCHART_EDGE_RE.exec(line);
+    if (!m) continue;
+    if (!subgraphIds.has(m[2]!)) referenced.add(m[2]!);
+    if (!subgraphIds.has(m[3]!)) referenced.add(m[3]!);
+  }
+
+  const classified = new Set<string>();
+  for (const line of source.split("\n")) {
+    const m = CLASS_LINE_RE.exec(line);
+    if (!m) continue;
+    for (const id of m[2]!.split(",").map((s) => s.trim()).filter(Boolean)) {
+      classified.add(id);
+    }
+  }
+
+  const missing = [...referenced].filter((id) => !classified.has(id));
+  if (missing.length === 0) {
+    return source; // every referenced node already has a category — don't touch the source at all
+  }
+
+  return `${source.trimEnd()}\nclass ${missing.join(",")} logicContext\n`;
 }

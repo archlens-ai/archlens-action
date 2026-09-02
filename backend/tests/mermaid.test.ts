@@ -53,6 +53,7 @@ describe("applyArchLensStyling", () => {
     expect(styled).toContain("classDef endpoint");
     expect(styled).toContain("classDef logic");
     expect(styled).toContain("classDef datastore");
+    expect(styled).toContain("classDef external");
   });
 
   // Round-2 addition: distinguishing "changed by this PR" from "pre-existing
@@ -63,12 +64,29 @@ describe("applyArchLensStyling", () => {
     const styled = applyArchLensStyling(
       'flowchart TD\n  subgraph API["API Layer"]\n    A["x"]\n  end\n  class A endpoint\n  class API endpointRegion'
     );
-    for (const name of ["endpointContext", "logicContext", "datastoreContext"]) {
+    for (const name of ["endpointContext", "logicContext", "datastoreContext", "externalContext"]) {
       expect(styled).toContain(`classDef ${name}`);
     }
-    for (const name of ["endpointRegion", "logicRegion", "datastoreRegion"]) {
+    for (const name of ["endpointRegion", "logicRegion", "datastoreRegion", "externalRegion"]) {
       expect(styled).toContain(`classDef ${name}`);
     }
+  });
+
+  // Round-7 addition: `external` (a third-party dependency this system only
+  // calls, e.g. a payment gateway) must render visually distinct from
+  // `datastore` (a table/queue this system owns) — a real adversarial
+  // review caught PaymentGateway/EventBus/NotificationService rendered
+  // identically to actual SQL tables because there was no fourth category.
+  it("gives external its own stroke color, distinct from datastore", () => {
+    const styled = applyArchLensStyling('flowchart TD\n  A["x"]\n  class A external');
+    const externalDef = styled.split("\n").find((l) => l.startsWith("classDef external "));
+    const datastoreDef = styled.split("\n").find((l) => l.startsWith("classDef datastore "));
+    expect(externalDef).toBeDefined();
+    expect(datastoreDef).toBeDefined();
+    const externalStroke = /stroke:(#[0-9a-f]+)/.exec(externalDef!)?.[1];
+    const datastoreStroke = /stroke:(#[0-9a-f]+)/.exec(datastoreDef!)?.[1];
+    expect(externalStroke).toBeDefined();
+    expect(externalStroke).not.toBe(datastoreStroke);
   });
 
   // Round-3 addition, from a second review: refactors/removals are a
@@ -232,6 +250,36 @@ describe("applyBoldGlowStyling", () => {
     expect(generalIdx).toBeGreaterThan(-1);
     expect(removedIdx).toBeGreaterThan(generalIdx);
   });
+
+  // Round-9 addition, from a fresh adversarial review against a real
+  // FastAPI diagram: the model collapsed a deleted intermediate file into
+  // an edge LABEL ("removed call to") between two otherwise perfectly
+  // normal, live nodes -- neither endpoint was ever classed `removed`, so
+  // touchesRemovedNode() had nothing to catch, and the edge rendered with
+  // the full bold/glowing "actively alive" treatment while its own label
+  // said the opposite. Shape below matches a real render exactly (`<g
+  // class="edgeLabel">...<g class="label" data-id="L_..."`), confirmed
+  // against scripts/.dry-run-output/real-fastapi-round9-diagram.svg.
+  const labelRemovedSvg =
+    '<svg id="my-svg" viewBox="0 0 100 200">' +
+    '<g class="nodes">' +
+    '<g class="node default endpoint" id="my-svg-flowchart-A-0"></g>' +
+    '<g class="node default logic" id="my-svg-flowchart-B-1"></g>' +
+    "</g>" +
+    '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal flowchart-link" data-id="L_A_B_0"/>' +
+    '<g class="edgeLabel"><g class="label" data-id="L_A_B_0"><g><text><tspan>removed call to</tspan></text></g></g></g>' +
+    "</svg>";
+
+  it("tags an edge whose own label starts with 'removed', even when neither endpoint is classed `removed`", () => {
+    const result = applyBoldGlowStyling(labelRemovedSvg);
+    expect(result).toMatch(/id="my-svg-L_A_B_0"[^>]*class="[^"]*\barchlens-removed-edge\b/);
+  });
+
+  it("does not tag a live edge whose label merely mentions 'removed' mid-sentence, not as its opening word", () => {
+    const svg = labelRemovedSvg.replace("removed call to", "the tenacity dependency was removed");
+    const result = applyBoldGlowStyling(svg);
+    expect(result).not.toMatch(/id="my-svg-L_A_B_0"[^>]*class="[^"]*\barchlens-removed-edge\b/);
+  });
 });
 
 describe("appendLegend", () => {
@@ -260,11 +308,12 @@ describe("appendLegend", () => {
     expect(withLegend).toContain("solid = changed by this PR");
     expect(withLegend).toContain("dashed = existing context");
     expect(withLegend).toContain("Removed by this PR");
-    // Each of the 3 categories renders two swatch <rect>s on its row (solid
-    // + dashed) — count non-dashed vs dashed swatch rects to confirm both
-    // variants are actually present, not just the labels.
+    // Each of the 4 categories (endpoint/logic/datastore/external) renders
+    // two swatch <rect>s on its row (solid + dashed), plus "removed"'s
+    // single always-dashed swatch — count dashed swatch rects to confirm
+    // the variants are actually present, not just the labels.
     const dashedSwatches = withLegend.match(/stroke-dasharray="3 2"/g) ?? [];
-    expect(dashedSwatches.length).toBeGreaterThanOrEqual(3); // one per category row
+    expect(dashedSwatches.length).toBeGreaterThanOrEqual(4); // one per changed/context category row
   });
 
   it("draws a visible top border on the legend strip, not loose floating text", () => {
@@ -312,6 +361,7 @@ describe("appendLegend", () => {
     expect(withLegend).toContain("Endpoint");
     expect(withLegend).toContain("Logic");
     expect(withLegend).toContain("Datastore");
+    expect(withLegend).toContain("External");
     expect(withLegend).toContain("Removed by this PR");
     expect(legendRowCount(withLegend, 200)).toBeGreaterThan(1);
   });

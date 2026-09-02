@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeDiffTouchState, reconcileDiffClassification, type DiffPatchFile } from "../lib/diff-classify.js";
+import { computeDiffTouchState, reconcileDiffClassification, stripSelfLoopEdges, assignMissingCategories, type DiffPatchFile } from "../lib/diff-classify.js";
 
 describe("computeDiffTouchState", () => {
   it("collects tokens from added (+) lines as changed", () => {
@@ -130,6 +130,21 @@ describe("computeDiffTouchState", () => {
     const { changed } = computeDiffTouchState(files);
     expect(changed.has("models")).toBe(true);
   });
+
+  // Round-7 addition: a real, confirmed false negative found on the
+  // product's own FastAPI real-repo test. tokenize() used to require 3+
+  // total characters, so a 2-character basename like "db" (from "db.py")
+  // produced NO tokens at all -- a modified db.py could never register as
+  // "changed" no matter what, which is also what silently defeated the
+  // round-7 "wrongly removed" rescue logic on this exact file (see
+  // reconcileDiffClassification's removed-handling below).
+  it("recognizes a 2-character basename like 'db' (from db.py) as changed evidence, not silently dropped for being too short", () => {
+    const files: DiffPatchFile[] = [
+      { filename: "backend/app/core/db.py", status: "modified", patch: "+engine = create_engine(str(settings.DATABASE_URL), pool_pre_ping=True)" },
+    ];
+    const { changed } = computeDiffTouchState(files);
+    expect(changed.has("db")).toBe(true);
+  });
 });
 
 describe("reconcileDiffClassification", () => {
@@ -163,6 +178,30 @@ describe("reconcileDiffClassification", () => {
     // it correctly stays classified as changed.
     expect(result).toContain("class B logic");
     expect(result).not.toContain("class B logicContext");
+  });
+
+  // Round-7 addition: `external` (a third-party dependency, e.g. a payment
+  // gateway) is a fourth base category alongside endpoint/logic/datastore
+  // (see mermaid.ts's CATEGORY_CLASS_DEFS and llm.ts's SYSTEM_PROMPT for
+  // why it needed to exist) -- it must get the exact same diff-aware
+  // changed/Context reconciliation, not be silently left out because it's
+  // new.
+  it("reconciles 'external' the same way as the other base categories", () => {
+    const source = [
+      'flowchart TD',
+      '  A["PaymentGateway"]',
+      '  B["issueRefund()"]',
+      '  A --> B',
+      '  class A external',
+      '  class B logic',
+    ].join("\n");
+
+    const result = reconcileDiffClassification(source, files);
+    // PaymentGateway is only referenced (called), never defined/modified by
+    // the diff -- external's plain (changed) variant must be downgraded to
+    // externalContext exactly like datastore/endpoint/logic are.
+    expect(result).toContain("class A externalContext");
+    expect(result).not.toContain("class A external\n");
   });
 
   it("promotes a node to 'removed' when its only diff evidence is on a removed line", () => {
@@ -199,13 +238,84 @@ describe("reconcileDiffClassification", () => {
     expect(result).toContain("class Logic logicRegion");
   });
 
-  it("never touches a line the model already marked 'removed'", () => {
+  // Round-7 addition, replacing the old "never touches 'removed'" test:
+  // a real Anthropic-generated diagram (FastAPI real-repo test, round 8)
+  // re-marked db.py `removed` even though the diff only modified it --
+  // recurring despite the SYSTEM_PROMPT already warning against exactly
+  // this cascade (see llm.ts). `removed` is no longer a free pass: a node
+  // whose label has real evidence of being CHANGED by this diff cannot
+  // have been deleted BY THIS SAME DIFF, so it's rescued to `logicContext`
+  // rather than left rendered as torn out of the codebase.
+  it("rescues a node the model wrongly marked 'removed' when the diff shows it was actually changed, not deleted", () => {
     const source = [
       'flowchart TD',
-      '  A["issueRefund()"]', // this WOULD match changed tokens if reconciled
+      '  A["issueRefund()"]', // matches a changed token -- proof this file/identifier is still present
       '  class A removed',
     ].join("\n");
     const result = reconcileDiffClassification(source, files);
+    expect(result).toContain("class A logicContext");
+    expect(result).not.toContain("class A removed");
+  });
+
+  // Round-7 addition: the exact real bug, reproduced end to end -- a real
+  // Anthropic-generated FastAPI diagram wrongly marked db.py `removed`
+  // even though the diff only added `pool_pre_ping=True` to its existing
+  // engine call. Depends on both the tokenize() short-basename fix above
+  // AND the removed-rescue logic -- neither alone was sufficient.
+  it("rescues a real modified file (db.py) wrongly marked 'removed', end to end", () => {
+    const dbFiles: DiffPatchFile[] = [
+      { filename: "backend/app/core/db.py", status: "modified", patch: "+engine = create_engine(str(settings.DATABASE_URL), pool_pre_ping=True)" },
+    ];
+    const source = [
+      'flowchart TD',
+      '  A["db.py<br/>pool_pre_ping"]',
+      '  class A removed',
+    ].join("\n");
+    const result = reconcileDiffClassification(source, dbFiles);
+    expect(result).toContain("class A logicContext");
+    expect(result).not.toContain("class A removed");
+  });
+
+  it("still leaves a genuinely removed node alone -- no changed-token evidence it survived the diff", () => {
+    const removalFiles: DiffPatchFile[] = [
+      { filename: "src/routes/legacy.ts", status: "removed", patch: "-router.post('/legacy-checkout', handler)" },
+    ];
+    const source = [
+      'flowchart TD',
+      '  A["POST /legacy-checkout"]',
+      '  class A removed',
+    ].join("\n");
+    const result = reconcileDiffClassification(source, removalFiles);
+    expect(result).toBe(source);
+  });
+
+  // Round-7 addition: a real Anthropic-generated diagram (same FastAPI
+  // round-8 run) contained the literal line `class removed removed` --
+  // referencing a node ID that was never declared anywhere, spelled
+  // identically to the category keyword. Almost certainly a hallucinated
+  // self-reference, not a real node; dropped rather than rendered as a
+  // dangling, meaningless class assignment.
+  it("drops a hallucinated 'removed' class line whose id is a reserved keyword with no matching node declaration", () => {
+    const source = [
+      'flowchart TD',
+      '  A["real node"]',
+      '  class removed removed',
+      '  class A endpoint',
+    ].join("\n");
+    const result = reconcileDiffClassification(source, files);
+    expect(result).not.toContain("class removed removed");
+    expect(result).toContain("class A endpoint");
+  });
+
+  it("keeps a genuinely declared node even if its id happens to collide with a reserved keyword", () => {
+    const source = [
+      'flowchart TD',
+      '  removed["a node someone chose to name removed"]',
+      '  class removed removed',
+    ].join("\n");
+    const result = reconcileDiffClassification(source, files);
+    // Has a real node declaration, and no changed-token evidence it
+    // survived the diff -- genuine removal, left untouched.
     expect(result).toBe(source);
   });
 
@@ -221,5 +331,96 @@ describe("reconcileDiffClassification", () => {
       '  class B logic',
     ].join("\n");
     expect(reconcileDiffClassification(source, files)).toBe(source);
+  });
+});
+
+describe("stripSelfLoopEdges", () => {
+  // Round-7 addition: a real Anthropic-generated NestJS diagram had 6 of
+  // its 14 edges be meaningless self-loops (`RoleSeedService -->|accesses|
+  // RoleSeedService`) despite the SYSTEM_PROMPT explicitly forbidding
+  // them — this is the deterministic backstop.
+  it("drops an edge whose source and target are the same node", () => {
+    const source = [
+      'flowchart TD',
+      '  A["RoleSeedService"]',
+      '  B["RoleRepository"]',
+      '  A -->|accesses| A',
+      '  A -->|seeds| B',
+    ].join("\n");
+    const result = stripSelfLoopEdges(source);
+    expect(result).not.toContain("-->|accesses| A");
+    expect(result).toContain("A -->|seeds| B");
+  });
+
+  it("leaves a real edge between two different nodes untouched", () => {
+    const source = 'flowchart TD\n  A["x"]\n  B["y"]\n  A --> B';
+    expect(stripSelfLoopEdges(source)).toBe(source);
+  });
+
+  it("strips an unlabeled self-loop too, not just a labeled one", () => {
+    const source = 'flowchart TD\n  A["x"]\n  A --> A';
+    const result = stripSelfLoopEdges(source);
+    expect(result).not.toContain("A --> A");
+  });
+
+  it("is a no-op for sequenceDiagram, where a self-message (A->>A: ...) is legitimate", () => {
+    const source = "sequenceDiagram\n  A->>A: validate internally";
+    expect(stripSelfLoopEdges(source)).toBe(source);
+  });
+
+  it("returns the source completely unchanged when there are no self-loops", () => {
+    const source = 'flowchart TD\n  A["x"]\n  B["y"]\n  A --> B';
+    expect(stripSelfLoopEdges(source)).toBe(source);
+  });
+});
+
+describe("assignMissingCategories", () => {
+  // Round-8 addition: a real Anthropic-generated diagram (live-scale
+  // stress test) declared and wired up `RefundWorker` into two real edges
+  // but never gave it a `class` line at all. mermaid doesn't error on an
+  // unclassed node -- it silently falls back to the theme's
+  // primaryBorderColor, which is the exact same blue as `endpoint`, so a
+  // background worker rendered as if it were a real API route.
+  it("assigns logicContext to a node that's declared and wired into edges but never appears in any class line", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Data["Data & Events"]',
+      '    EventBus["EventBus"]',
+      '  end',
+      '  EventBus -->|triggers| RefundWorker["refundWorker"]',
+      '  RefundWorker -->|calls| NotifSvc["NotificationService"]',
+      '  class EventBus,NotifSvc externalContext',
+    ].join("\n");
+    const result = assignMissingCategories(source);
+    expect(result).toContain("class RefundWorker logicContext");
+  });
+
+  it("leaves a diagram alone when every referenced node already has a category", () => {
+    const source = [
+      'flowchart TD',
+      '  A["x"]',
+      '  B["y"]',
+      '  A --> B',
+      '  class A endpoint',
+      '  class B logic',
+    ].join("\n");
+    expect(assignMissingCategories(source)).toBe(source);
+  });
+
+  it("never treats a subgraph id as a node needing a category", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph API["API Layer"]',
+      '    A["x"]',
+      '  end',
+      '  class A endpoint',
+      '  class API endpointRegion',
+    ].join("\n");
+    expect(assignMissingCategories(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram, where class doesn't apply", () => {
+    const source = "sequenceDiagram\n  A->>B: hi";
+    expect(assignMissingCategories(source)).toBe(source);
   });
 });

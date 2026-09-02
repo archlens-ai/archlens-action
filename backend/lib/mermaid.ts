@@ -142,13 +142,34 @@ export const ARCHLENS_THEME_CONFIG = {
 // now share one identical, background-matching fill — the subgraph
 // boundary is still visible (a neutral border + its label), but the
 // canvas itself stays uniformly dark everywhere, per the ask.
+// Round-7 addition, from the second round-6 adversarial review: a
+// third-party dependency this system merely CALLS (a payment gateway, an
+// external notification/email/SMS provider, an outside message broker used
+// only via its client SDK) was getting forced into `datastore`/
+// `datastoreContext` just because the model grouped it near the tables in
+// a "Data & Events" cluster — verified against a real Anthropic-generated
+// diagram (PaymentGateway/EventBus/NotificationService, all classed
+// `datastoreContext`), not assumed. That's a real semantic error: a purple
+// box now means both "an actual SQL table this system owns" and "a
+// third-party API it merely calls," indistinguishable at a glance — which
+// undercuts the same "read the architecture accurately" pitch the
+// diff-awareness colors exist for. Sequence diagrams already solve this
+// exact distinction with actor-vs-participant (see llm.ts); flowcharts had
+// no equivalent, so `external`/`externalContext` fills that gap as a
+// fourth base category, not a datastore variant — amber (#d29922), the same
+// hue already used for sequence-diagram notes, chosen specifically because
+// it's the one accent in this palette not already claiming a category
+// (blue/green/purple = endpoint/logic/datastore), so "outside this
+// system's own control" reads as its own thing rather than a tinted table.
 const CATEGORY_CLASS_DEFS = [
   "classDef endpoint fill:#1c2128,stroke:#58a6ff,stroke-width:2px,color:#e6edf3",
   "classDef logic fill:#1c2128,stroke:#7ee787,stroke-width:2px,color:#e6edf3",
   "classDef datastore fill:#1c2128,stroke:#bc8cff,stroke-width:2px,color:#e6edf3",
+  "classDef external fill:#1c2128,stroke:#d29922,stroke-width:2px,color:#e6edf3",
   "classDef endpointContext fill:#161b22,stroke:#58a6ff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef logicContext fill:#161b22,stroke:#7ee787,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef datastoreContext fill:#161b22,stroke:#bc8cff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
+  "classDef externalContext fill:#161b22,stroke:#d29922,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   // Round-6 fix: matches clusterBorder's #6e7681 (see
   // ARCHLENS_THEME_CONFIG above for the contrast-ratio math). These
   // *Region classDefs carry `!important` and are what the model actually
@@ -159,6 +180,7 @@ const CATEGORY_CLASS_DEFS = [
   "classDef endpointRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
   "classDef logicRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
   "classDef datastoreRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
+  "classDef externalRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
   "classDef removed fill:#2d1a1f,stroke:#f85149,stroke-width:1.5px,stroke-dasharray:2 2,color:#ffa198",
 ].join("\n");
 
@@ -203,6 +225,13 @@ const LEGEND_ITEMS: LegendItem[] = [
     swatches: [
       { fill: "#1c2128", stroke: "#bc8cff", dashed: false },
       { fill: "#161b22", stroke: "#bc8cff", dashed: true },
+    ],
+  },
+  {
+    label: "External",
+    swatches: [
+      { fill: "#1c2128", stroke: "#d29922", dashed: false },
+      { fill: "#161b22", stroke: "#d29922", dashed: true },
     ],
   },
   {
@@ -492,6 +521,53 @@ function touchesRemovedNode(dataId: string | null, categories: Map<string, strin
 }
 
 /**
+ * Reads every flowchart edge's own label text straight out of the rendered
+ * SVG, keyed by the same `data-id` its `<path>` carries: Mermaid emits each
+ * edge label as `<g class="edgeLabel">...<g class="label" data-id="L_..."
+ * ...><tspan>text</tspan>...` (confirmed against a real render), so the
+ * label's own tspans, concatenated, give the exact text a human reviewer
+ * would read on that edge.
+ */
+function extractEdgeLabels(svg: string): Map<string, string> {
+  const labels = new Map<string, string>();
+  const labelGroupRe = /<g class="edgeLabel"[^>]*>(.*?)<\/g>\s*<\/g>\s*<\/g>/gs;
+  let match: RegExpExecArray | null;
+  while ((match = labelGroupRe.exec(svg))) {
+    const block = match[1]!;
+    const dataId = extractAttr(block, "data-id");
+    if (!dataId) continue;
+    const text = [...block.matchAll(/<tspan[^>]*>([^<]*)<\/tspan>/g)].map((t) => t[1]).join("");
+    if (text) labels.set(dataId, text);
+  }
+  return labels;
+}
+
+/**
+ * Round-9 fix, from a fresh adversarial review against a real FastAPI
+ * diagram: the model represented a deleted intermediate file
+ * (`backend_pre_start.py`) not as its own `removed`-classed node but by
+ * collapsing it into an edge label instead — `prestart.sh -->|removed call
+ * to| db.py`, with BOTH endpoints perfectly live/normal nodes. Since
+ * touchesRemovedNode() above only ever looks at node categories, an edge
+ * like this had nothing to catch it: it rendered with the full bold,
+ * glowing, "actively alive" styling while its own label said "removed" —
+ * the exact contradiction round-6 already fixed for the node-touching
+ * case, recurring here in a shape that fix didn't cover. Real, confirmed:
+ * every actual generated diagram that hit this used the word "removed" to
+ * open the label ("removed call to," "removed tenacity") — an emergent,
+ * not prompt-mandated, convention, which is exactly why this needs a
+ * deterministic catch rather than trusting the model to keep doing it.
+ * Deliberately narrow (a leading "removed", case-insensitive) rather than
+ * a broader keyword search, to avoid ever misfiring on a legitimately live
+ * edge whose label happens to mention removal in passing.
+ */
+function labelIndicatesRemoval(dataId: string | null, edgeLabels: Map<string, string>): boolean {
+  if (!dataId) return false;
+  const label = edgeLabels.get(dataId);
+  return !!label && /^\s*removed\b/i.test(label);
+}
+
+/**
  * User ask (2026-08-31): "make the text and line bright and bold... clearly
  * visible", plus the glow half of the animated-flow request. mmdc's stock
  * stylesheet ships edges at a flat 1px (flowchart) / 1.5px (sequence) with
@@ -526,9 +602,10 @@ function touchesRemovedNode(dataId: string | null, categories: Map<string, strin
  */
 export function applyBoldGlowStyling(svg: string): string {
   const nodeCategories = extractNodeCategories(svg);
+  const edgeLabels = extractEdgeLabels(svg);
   const markedSvg = svg.replace(EDGE_PATH_TAG_RE, (tag) => {
     const dataId = extractAttr(tag, "data-id");
-    if (!touchesRemovedNode(dataId, nodeCategories)) return tag;
+    if (!touchesRemovedNode(dataId, nodeCategories) && !labelIndicatesRemoval(dataId, edgeLabels)) return tag;
     return tag.replace(/\bclass="([^"]*)"/, (_m, cls: string) => `class="${cls} ${REMOVED_EDGE_CLASS}"`);
   });
 

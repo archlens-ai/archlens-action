@@ -46,59 +46,103 @@ architecture map or just a scatter of boxes, so follow it closely:
   where grouping would add noise rather than clarity. Give each subgraph
   a region class matching its dominant category — \`class API
   endpointRegion\`, \`class Logic logicRegion\`, \`class Data
-  datastoreRegion\` — right after its \`end\`.
+  datastoreRegion\`, \`class ThirdParty externalRegion\` — right after its
+  \`end\`. Never put a genuine external dependency (see \`external\` below)
+  in the same subgraph as this system's own tables/queues just because
+  they're both "data-ish" — give it its own subgraph, or leave it outside
+  any subgraph, rather than implying this codebase owns it.
 - Every flowchart node MUST get exactly one category via a \`class\` line —
   never a \`classDef\` (ArchLens applies its own fixed color palette
-  server-side; a classDef you emit is discarded). The three base categories
+  server-side; a classDef you emit is discarded). The four base categories
   are: \`endpoint\` (routes, controllers, API handlers — something that
-  directly receives an incoming HTTP/RPC/event request; a file merely
-  named \`*Service\` or \`*.service.ts\` is NOT an endpoint just because it's
-  reachable from one — classify it by what it IS, not by what calls it),
-  \`logic\` (services, business logic, background jobs, and also
-  config/dependency files — \`package.json\`, \`pyproject.toml\`,
-  lockfiles, env/settings files — when they're worth showing at all),
-  \`datastore\` (things that actually store or persist application data:
-  tables, schemas, migrations, caches, message queues/topics — NEVER a
-  config file, lockfile, or dependency manifest, even one that lists a
-  database driver as a dependency).
+  directly receives an incoming HTTP/RPC/event request over the network; a
+  file merely named \`*Service\` or \`*.service.ts\` is NOT an endpoint just
+  because it's reachable from one — classify it by what it IS, not by what
+  calls it. A shell script, CI/CD workflow file (e.g. \`prestart.sh\`,
+  \`test-backend.yml\`, a Dockerfile), or any other operational/deployment
+  script is NEVER \`endpoint\` either, even though it's technically "an
+  entry point" in the sense that something else invokes it — this category
+  means "receives HTTP/RPC traffic," not "gets executed/run"; a container
+  startup script that never handles a request belongs in \`logic\` — this
+  exact confusion was found in a real generated diagram, where
+  \`prestart.sh\`/\`tests-start.sh\`/\`test-backend.yml\` were all wrongly
+  colored the same blue as a real API route, actively misleading a
+  reviewer scanning for "which HTTP endpoints changed"),
+  \`logic\` (services, business logic, background jobs, operational/
+  deployment/CI scripts (prestart/entrypoint shell scripts, GitHub Actions
+  workflow files, Dockerfiles), and also config/dependency files —
+  \`package.json\`, \`pyproject.toml\`, lockfiles, env/settings files —
+  when they're worth showing at all),
+  \`datastore\` (things this system itself implements/owns to store or
+  persist application data: its own tables, schemas, migrations, caches,
+  message queues/topics — NEVER a config file, lockfile, or dependency
+  manifest, even one that lists a database driver as a dependency),
+  \`external\` (a third-party system this codebase only CALLS OUT to via a
+  client/SDK/API and does not itself implement — a payment gateway, an
+  outside email/SMS/push-notification provider, a hosted message broker or
+  webhook target owned by another company. The test: does this repo define
+  this thing's schema/queue/implementation, or does it only invoke it from
+  the outside? \`EventBus\`, \`NotificationService\`, \`PaymentGateway\` and
+  similarly-named collaborators referenced only by a method call (never
+  defined in this diff) are \`external\`/\`externalContext\`, NOT
+  \`datastore\`/\`datastoreContext\` — a purple "datastore" box must mean
+  "an actual table/queue this system owns," never "some other service we
+  talk to," even when the diff happens to introduce both in the same
+  handful of lines).
 - **Distinguish what this PR actually changed from pre-existing context.**
   This diagram's whole purpose is showing a diff's impact, not just a
   static picture of the resulting architecture — so a node the diff adds
-  or modifies gets its plain category (\`endpoint\`/\`logic\`/\`datastore\`);
-  a node that's only referenced for context (e.g. an existing table a new
-  column has a foreign key to, an existing service a new endpoint calls,
-  but the diff doesn't touch that table/service itself) gets the
-  \`Context\`-suffixed variant instead: \`endpointContext\`,
-  \`logicContext\`, \`datastoreContext\`. If the diff removes something
-  entirely (a deleted endpoint, dropped table, removed function), still
-  show it so the removal is visible, but give it the \`removed\` category
-  instead of its usual one. **\`removed\` means THIS SPECIFIC node's own
-  file/definition was deleted by the diff — never apply it to a node
-  just because something ELSE it calls, is called by, or references was
-  removed.** (e.g. if \`OrderService\` is deleted but \`OrdersController\`
-  — which merely calls it — was only modified, \`OrdersController\` keeps
-  its normal category; only \`OrderService\` gets \`removed\`.) If you
-  cannot tell from the diff whether something existed before, default it
-  to Context rather than guessing it's new — and if you cannot tell
-  whether a node was actually deleted vs. merely modified, default it to
-  its normal category (or Context) rather than guessing \`removed\`, since
-  a wrongly-\`removed\` node is a worse error than an under-highlighted
-  one. Example: \`class A,B endpoint\` (new/changed), \`class C
-  datastoreContext\` (pre-existing, referenced only), \`class D removed\`
-  (deleted by this diff) in the same diagram. Every node must appear in
-  exactly one class line total (combine multiple nodes of the same
-  category into one line rather than repeating a node).
+  or modifies gets its plain category (\`endpoint\`/\`logic\`/\`datastore\`/
+  \`external\`); a node that's only referenced for context (e.g. an
+  existing table a new column has a foreign key to, an existing service a
+  new endpoint calls, an existing third-party integration a new code path
+  merely invokes, but the diff doesn't touch that table/service/dependency
+  itself) gets the \`Context\`-suffixed variant instead: \`endpointContext\`,
+  \`logicContext\`, \`datastoreContext\`, \`externalContext\`. If the diff
+  removes something entirely (a deleted endpoint, dropped table, removed
+  function), still show it so the removal is visible, but give it the
+  \`removed\` category instead of its usual one. **\`removed\` means THIS
+  SPECIFIC node's own file/definition was deleted by the diff — never
+  apply it to a node just because something ELSE it calls, is called by,
+  or references was removed.** (e.g. if \`OrderService\` is deleted but
+  \`OrdersController\` — which merely calls it — was only modified,
+  \`OrdersController\` keeps its normal category; only \`OrderService\` gets
+  \`removed\`.) If you cannot tell from the diff whether something existed
+  before, default it to Context rather than guessing it's new — and if you
+  cannot tell whether a node was actually deleted vs. merely modified,
+  default it to its normal category (or Context) rather than guessing
+  \`removed\`, since a wrongly-\`removed\` node is a worse error than an
+  under-highlighted one. Example: \`class A,B endpoint\` (new/changed),
+  \`class C datastoreContext\` (pre-existing table, referenced only),
+  \`class E externalContext\` (pre-existing third-party API, referenced
+  only), \`class D removed\` (deleted by this diff) in the same diagram.
+  Every node must appear in exactly one class line total (combine multiple
+  nodes of the same category into one line rather than repeating a node).
+- **Never draw an edge from a node to itself** (e.g. \`A -->|uses| A\`).
+  A self-loop conveys no real relationship and only adds visual clutter —
+  confirmed as real, wasted width in a generated diagram where 6 of a
+  14-edge flowchart were bare self-loops apparently invented just to
+  "attach" a node to the diagram. If a node changed but has no genuine
+  caller/callee edge to show, its category color alone (plain vs.
+  \`Context\`) already communicates that — it needs no edge at all, fake or
+  otherwise. Every edge must run between two DIFFERENT nodes.
 - For "sequenceDiagram" diagrams, start with \`autonumber\` so steps are
   referenceable in review comments. Declare with \`actor Name\` anything
   outside this codebase's own control — a human user, or an external
   third-party system/API (a payment gateway, an outside email provider) —
   and everything this codebase actually implements with \`participant
   Name\`; this distinguishes "outside the system" from "inside it" at a
-  glance, the sequence-diagram equivalent of the endpoint/logic/datastore
-  split. **Also show diff-awareness here, the same way flowchart does**:
+  glance, the same actor/participant split flowchart's own \`external\`
+  category exists to draw. **Also show diff-awareness here, the same way flowchart does**:
   wrap the message exchanges that are genuinely new in this PR in
-  \`rect rgba(88, 166, 255, 0.18)\` ... \`end\` (exact color, so every
-  diagram's "new" highlight matches) — leave pre-existing call flow the
+  \`rect rgba(88, 166, 255, 0.3)\` ... \`end\` (exact color, so every
+  diagram's "new" highlight matches — round 8 raised this from 0.18 after
+  pixel-sampling a real render proved 0.18 WAS technically compositing
+  correctly, measured, but was so close to the near-black canvas that a
+  reviewer looking at the actual screenshot couldn't perceive any
+  highlight at all; 0.3 is a real, meaningfully more visible tint on the
+  same dark canvas, still short of overpowering the message text it sits
+  behind) — leave pre-existing call flow the
   diff doesn't touch outside any rect block. If the whole exchange is new,
   wrap the entire sequence; if only part of it is new (e.g. an existing
   flow gained one new step), wrap only that part. Add a brief
@@ -115,8 +159,20 @@ architecture map or just a scatter of boxes, so follow it closely:
 // unlike the diagram's content, THIS decision is made in code from a
 // number we already have (files.length), not left to the model to notice
 // and self-regulate.
+// Round-7 finding: on a real 14-file NestJS diff, the actual production
+// model (claude-haiku-4-5 — see backend/.env; this product's $12-29/mo
+// pricing can't run every diagram through a frontier model) still produced
+// 15 nodes against a stated cap of 12 — a confirmed, measured overshoot,
+// not a hypothetical. That extra width is exactly what made the rendered
+// diagram illegible once scaled down to GitHub's fixed PR-comment column
+// (a 2942x632 natural SVG, ~4.7:1, crushed to ~165px tall at 768px wide).
+// The cap dropped from 12 to 10 to build in headroom against that observed
+// overshoot rate, and the instruction now states the number twice with
+// "HARD CAP" framing rather than once with softer language — a cap a
+// smaller model already blew past by 25% needs to be stated more
+// forcefully, not just left as-is and hoped to land better next time.
 const COARSE_MODE_THRESHOLD = 6;
-const COARSE_MODE_MAX_NODES = 12;
+const COARSE_MODE_MAX_NODES = 10;
 
 export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): string {
   const hint =
@@ -126,7 +182,7 @@ export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): st
 
   const coarseModeHint =
     files.length > COARSE_MODE_THRESHOLD
-      ? `\nCOARSE MODE — this diff touches ${files.length} files, too many for a legible one-node-per-function diagram. Represent one node per FILE or logical module (e.g. "OrdersController", "RefundService"), not one per function/route inside it — fold a file's functions into a single node and let its category reflect the file's dominant role. Merge closely-related files in the same directory into one combined node if that keeps things clearer. Keep the total node count at or under ${COARSE_MODE_MAX_NODES} even if that means grouping further. This applies to flowchart diagrams; for a sequenceDiagram, keep participants at the service level for the same reason.\n`
+      ? `\nCOARSE MODE — this diff touches ${files.length} files, too many for a legible one-node-per-function diagram. Represent one node per FILE or logical module (e.g. "OrdersController", "RefundService"), not one per function/route inside it — fold a file's functions into a single node and let its category reflect the file's dominant role. Merge closely-related files in the same directory into one combined node if that keeps things clearer. HARD CAP: ${COARSE_MODE_MAX_NODES} nodes total, no exceptions — if you're at ${COARSE_MODE_MAX_NODES} and more files remain, keep merging/dropping the least important ones rather than going over. This applies to flowchart diagrams; for a sequenceDiagram, keep participants at the service level for the same reason (hard cap ${COARSE_MODE_MAX_NODES} participants too).\n`
       : "";
 
   const fileBlocks = files

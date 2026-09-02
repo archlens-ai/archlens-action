@@ -793,3 +793,216 @@ fixed this round. A follow-up review against fresh screenshots
 reflecting these fixes is the immediate next step, and should continue
 until it scores >= 9, before any payment/billing work per the user's
 explicit instruction.
+
+## 20. Three more adversarial review rounds (2026-09-02) — 4/10 → 3/10 → 3/10; seven more real bugs found and fixed, one confirmed-unfixable layout limitation disclosed
+
+Continued the same loop: fresh, context-free review against freshly
+regenerated screenshots, verify every claim against real generated
+mermaid source/SVG before acting, fix only what's confirmed real. Three
+more rounds run this session; scores did not cross 9 yet, but each
+round's findings got measurably narrower and more real bugs were fixed
+than in any prior round. Full detail below; summary first.
+
+**New category: `external`, fixing a real datastore/third-party
+conflation.** A real Anthropic call (the 10-file stress test) classed
+`PaymentGateway`/`EventBus`/`NotificationService` as `datastoreContext`
+— purple, the same color as actual SQL tables — because flowchart had
+no equivalent to sequence diagrams' actor/participant split. Added a
+fourth base category, `external`/`externalContext` (amber `#d29922`,
+matching sequence-diagram notes), to mermaid.ts's CATEGORY_CLASS_DEFS,
+legend, llm.ts's SYSTEM_PROMPT (with the exact failure case as a
+negative example), and diff-classify.ts's BASE_CATEGORIES (so it gets
+the same changed/Context reconciliation as the other three). Re-run
+confirmed the model now puts these in their own "External Services"
+subgraph, correctly `externalContext` — verified against a real fresh
+render, not assumed.
+
+**Self-loop edges, a real invented-noise bug.** The NestJS real-repo
+diagram had 6 of its 14 edges be meaningless self-loops
+(`RoleSeedService -->|accesses| RoleSeedService`) — the model
+apparently inventing an edge just to justify a node's presence in the
+graph. Fixed with both a SYSTEM_PROMPT rule (never draw A-->A) AND a
+deterministic backstop, `stripSelfLoopEdges()` in diff-classify.ts,
+wired into generate-handler.ts right after reconciliation — the same
+"prompt alone isn't reliable enough on the actual production model"
+reasoning as item 19's disclosed residual risk, this time acted on
+directly rather than left prompt-only, because real recurrence (see
+below) proved that residual risk wasn't hypothetical.
+
+**Node-count cap tightened, not fully solved.** The same NestJS run
+produced 15 nodes against a stated cap of 12 (COARSE_MODE_MAX_NODES).
+Dropped the cap to 10 and reworded it as a "HARD CAP" stated twice.
+Real re-test: the model still overshot (16 nodes against the new cap
+of 10) on a fresh call. This is now a confirmed, disclosed, NOT solved
+limitation of relying on a smaller production model
+(`claude-haiku-4-5` — see backend/.env, chosen for the $12-29/mo unit
+economics) for precise numeric instruction-following; a fully
+deterministic node-merge/truncation pass would be the real fix but is
+out of scope for this pass (safely collapsing graph structure without
+breaking edges/categories is a much larger, riskier lift than a prompt
+tweak).
+
+**The `removed`-cascading bug from item 19 recurred, and was this time
+fixed deterministically, not just prompt-nudged.** A fresh FastAPI
+real-repo run re-marked `db.py` `removed` despite only being modified —
+the exact bug item 19's prompt fix was meant to prevent, recurring
+because a smaller model's instruction-following isn't perfectly
+reliable run to run (confirmed: same file, same repo, same commit,
+different sampling). Given real recurrence, `reconcileDiffClassification`
+now gives `removed` its own reconciliation pass instead of leaving it
+untouched: a node whose label has real evidence of being CHANGED (its
+tokens overlap the diff's own `changed` token set) cannot have been
+deleted by this same diff, so it's rescued to `logicContext` — the
+neutral, least-alarming fallback (not a full "recover the true
+category" fix, which would need information `removed` already
+discarded; every confirmed real occurrence of this bug has been a
+config/settings/infra file, which `logic` already explicitly covers).
+
+**Root cause underneath that bug: `tokenize()`'s minimum length was
+too strict.** Debugging the above found `db.py`'s basename tokenizes to
+"db" — exactly 2 characters — and `tokenize()` required 3+ total chars
+in both its regexes, so "db" (and any 2-char identifier: "io", "ui",
+"os"...) produced ZERO tokens, meaning a `db.py`-derived node could
+never match ANY changed-evidence no matter what, independent of the
+`removed`-rescue logic above (which depends on exactly this match).
+Lowered the minimum to 2 chars and added a small set of short English
+glue-words (to/is/in/on/at/by/as/or/if/it/an/be/do/no/so/up/of/we/he)
+to STOPWORDS to guard against the noise this newly admits. Verified
+end-to-end against the real captured bug (a standalone script replaying
+the exact real diff + raw LLM output through the patched pipeline)
+before trusting it, not just the unit tests.
+
+**A hallucinated `class removed removed` line, real and dropped.** The
+same FastAPI run's raw output contained the literal line `class removed
+removed` — a class assignment for a node ID that was never declared
+anywhere, spelled identically to the category keyword itself (almost
+certainly the model meant "the removed thing" as a concept, not a real
+node). `reconcileDiffClassification` now drops any `removed`-category
+id that exactly matches a reserved category keyword AND has no matching
+node declaration — a real declared node that happens to be named
+`removed` is still preserved (checked via `nodeLabels`, not just the id
+string).
+
+**An unclassed node rendering as if it were a real Endpoint — a real,
+actively misleading bug, not cosmetic.** The live-scale stress test
+declared and wired up `RefundWorker` into two real edges but never gave
+it a `class` line in ANY of the model's six `class` statements. Mermaid
+doesn't error on this — it silently falls back to the theme's
+`primaryBorderColor`, which happens to be the exact same blue ArchLens
+uses for `endpoint`, so a background worker rendered as if it were a
+real API route, a wrong claim about the architecture on the product's
+own flagship example. Added `assignMissingCategories()` (diff-classify.ts):
+finds every node referenced by a bracket declaration or edge endpoint,
+subtracts every node that already has SOME class line, and assigns
+`logicContext` to whatever's left. Wired into generate-handler.ts as
+the last deterministic step in the pipeline.
+
+**Sequence-diagram diff-highlight was real but too subtle to see.**
+Item 19 confirmed via pixel-sampling that the `rect rgba(88, 166, 255,
+0.18)` "new" highlight technically composited correctly. A fresh review
+this round looked at the actual screenshot and reported it as
+invisible — re-checked by pixel-sampling again: TRUE, the math was
+right (measured (26,43,64), predicted (26.5,43.8,64.8) for 0.18 against
+the #0d1117 canvas) but 0.18 is close enough to the near-black canvas
+that a human glancing at the actual screenshot also can't reliably see
+it, which is a real legibility problem even though the earlier "does it
+render at all" question was answered correctly. Raised to 0.3 in
+llm.ts's SYSTEM_PROMPT (the literal color string the model is asked to
+emit) — re-verified with a fresh real render: now a clearly, obviously
+distinct lighter-blue band, confirmed by both the screenshot and pixel
+sampling.
+
+**`endpoint` category drift: operational scripts, not routes.** A fresh
+FastAPI review caught `prestart.sh`/`tests-start.sh`/`test-backend.yml`
+all colored blue = Endpoint, directly contradicting the product's own
+legend ("routes/controllers... receives an incoming HTTP/RPC/event
+request") — a shell script or CI YAML file receives no such thing.
+Tightened the SYSTEM_PROMPT's `endpoint` definition with an explicit
+exclusion (operational/deployment scripts are `logic`, not `endpoint`,
+even though they're technically "an entry point" in the sense that
+something else invokes them) and a worked negative example matching
+this exact real failure. Re-verified on a fresh real FastAPI call: all
+three now render green (logic), not blue.
+
+**A second, different shape of the item-16/19 removed-edge-glow bug,
+this time on the EDGE LABEL rather than the node category.** The same
+fresh FastAPI review caught `prestart.sh -->|removed call to| db.py`
+rendering as a bold, glowing, fully-live edge — even though its own
+label says "removed." Root cause: this time the model represented the
+deleted intermediate file (`backend_pre_start.py`) not as its own
+`removed`-classed node but by collapsing it straight into the edge
+label, so BOTH endpoints (`prestart.sh`, `db.py`) were perfectly normal
+live nodes — `touchesRemovedNode()` (item 19) only ever looks at node
+categories, so it had nothing to catch. Fixed with `extractEdgeLabels()`
+(reads each edge's own rendered label text out of the SVG, keyed by the
+same `data-id` its `<path>` carries) and `labelIndicatesRemoval()` (a
+narrow, leading-word-only "removed" check — deliberately not a broader
+keyword search, to avoid misfiring on a live edge that merely mentions
+removal in passing) in mermaid.ts, OR'd into `applyBoldGlowStyling()`'s
+existing check. Verified against the real captured bug (re-rendered the
+exact real mermaid source through the patched pipeline): both
+"removed call to" edges and the "removed tenacity" edge now render
+dim/dashed, while the genuinely live `pool_pre_ping`/`--wait flag`
+edges keep their bold glow.
+
+**Confirmed unfixable via available config, disclosed rather than
+chased further: ELK edge routing can still produce a box/ladder-like
+artifact.** Investigated a review claim that removed-edges in the real
+FastAPI diagram formed "a dashed-red rectangle... wrapping two
+subgraphs" rather than reading as separate edges. Confirmed real by
+inspecting the actual rendered path geometry (multiple edges bending
+through shared horizontal channels at the same y-coordinates,
+inherent to ELK's layered orthogonal routing when several edges
+converge across subgraph boundaries onto nodes outside any subgraph).
+Spent real effort trying to fix it, not just disclosing on first
+sight: tried `mergeEdges:false` (broke two of four edges into clean
+straight lines but relocated the box to the diagram's outer perimeter,
+arguably worse), grouping the removed nodes into their own subgraph
+(no improvement), and `considerModelOrder:NODES_AND_EDGES` combined
+with both (still boxy). Cross-checked against `@mermaid-js/layout-elk`'s
+own compiled source: the wrapper exposes exactly 7 `config.elk.*` keys
+end to end (`nodePlacementStrategy`, `nodePlacementAlignment`,
+`mergeEdges`, `forceNodeModelOrder`, `considerModelOrder`,
+`cycleBreakingStrategy`, `keepEntryNodeOnTop`) — ELK's own spacing/
+edge-routing options exist in the underlying library but are hardcoded
+by the wrapper and never read from our config at all, confirmed by
+reading `render-O7CIS3YK.mjs`'s `createRootElkGraph()` directly. No
+further lever exists without forking the rendering dependency, which
+is out of scope. Genuinely disclosed as unresolved, not swept aside.
+
+**Full verification**: 151 tests passing (up from 133 at the start of
+this round), all real end-to-end pipeline re-runs against real
+Anthropic API calls (not just unit tests) for every fix claimed above,
+fresh screenshots for each, and for the two subtlest claims (the
+opacity fix, and the earlier round-6 dashed-edge-touches-removed-node
+question) direct pixel-sampling verification rather than eyeballing a
+screenshot.
+
+**Still open / disclosed, not yet fixed**: (a) NestJS-shaped real-world
+diagrams (many small files, few natural layers) still render cramped/
+illegible at GitHub's fixed PR-comment width — the node-cap tightening
+above did not resolve this, confirmed by direct re-test; (b) the same
+node-count hard-cap is still not deterministically enforced, only
+prompted; (c) `refundWorker`-shaped nodes (declared inline in an edge
+rather than inside any subgraph block) still render outside every
+subgraph's visual grouping — cosmetic, not misleading, now that its
+color is correct; (d) two edges converging on the same target with
+identical generic labels ("issueRefund" x2 in one run) can still sit
+close enough together to require tracing by eye — inherent to how a
+real diff naturally produces repeated verbs, not something server-side
+post-processing can safely disambiguate without inventing text the
+model didn't write.
+
+**Status toward the score >= 9 gate**: NOT yet met (3/10 as of the
+last review this round). Ten real bugs fixed across `external`
+category, self-loop stripping, node-cap wording, `removed`-rescue
+reconciliation, the `tokenize()` short-basename fix, hallucinated-line
+dropping, missing-category assignment, sequence-diagram opacity, the
+`endpoint` category prompt drift, and label-based removed-edge
+detection — plus one exhaustively-investigated, confirmed-unfixable
+layout limitation now honestly disclosed rather than silently ignored.
+The next step is another fresh adversarial review round against fresh
+screenshots reflecting ALL of the above, continuing until it scores
+>= 9, before any payment/billing work per the user's explicit
+instruction: "we will do the payment integration when the score
+reaches >=9 [...] it wont sell until it is really helpfull."

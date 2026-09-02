@@ -106,7 +106,13 @@ describe("handleGenerateRequest", () => {
     const deps = makeDeps({ llmOutput: ["not a real diagram", "flowchart TD\n  A --> B"] });
     const { status, body } = await handleGenerateRequest(makeBody(), "alk_live_valid", deps);
     expect(status).toBe(200);
-    expect((body as any).mermaidSource).toBe("flowchart TD\n  A --> B");
+    // A,B get no `class` line in this bare fixture -- assignMissingCategories
+    // (round 8: a real generated diagram left a node completely unclassed,
+    // which silently rendered in endpoint's own blue via mermaid's default
+    // theme color) deterministically appends one rather than leaving them
+    // unclassed, so the repaired source is no longer byte-identical to the
+    // raw repair output.
+    expect((body as any).mermaidSource).toBe("flowchart TD\n  A --> B\nclass A,B logicContext\n");
     expect(deps.generateMermaid).toHaveBeenCalledTimes(2);
   });
 
