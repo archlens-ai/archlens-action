@@ -686,3 +686,34 @@ placement, and the token-overlap misclassification limitation
 against freshly generated screenshots — is next, and should repeat
 until it scores >= 9, per the user's explicit gate on payment/billing
 work.
+
+## 18. Legend redesigned as a full-width footer strip (2026-09-02)
+
+Closes the last cosmetic item from item 15's list: "reads as a boxed
+afterthought crammed into the bottom-left corner." Real complaint —
+once ELK's layout (item 14/17) meant most diagrams render far wider
+than the legend's own content needs, the old design's card sized itself
+to its content and left visible dead canvas on the same row.
+
+`appendLegend()` now packs items (the solid/dashed caption, then each
+category's solid/dashed swatch pair — the actual legend *content* is
+unchanged from round 3) left-to-right and wraps onto additional rows
+only when the diagram is too narrow for one line, inside a footer panel
+that spans the diagram's own full width — never a separate, narrower
+box — with a background matching the subgraph fill and a top border, so
+it reads as an integrated footer (the same visual language as a
+subgraph) rather than a floating card. Verified: 2 new tests replacing
+the old "bordered card" test (one confirms the footer's own background
+rect is exactly as wide as the diagram, one confirms narrow diagrams
+wrap rather than overflow) — full suite 133/133. Re-rendered the real
+10-file stress test and the FastAPI real-repo example end to end: both
+now show one compact, full-width caption strip instead of a tall boxed
+card with dead space beside it.
+
+**Status toward the score >= 9 gate**: every item-15 finding is now
+addressed except the token-overlap misclassification limitation (a
+disclosed, accepted limitation of the deterministic classifier, not a
+regression). Next step is a fresh round-6 adversarial review against
+freshly generated screenshots (never reused stale ones — the explicit
+lesson from round 5's own wrong finding), repeated until it scores >= 9,
+before any payment/billing work per the user's explicit instruction.
