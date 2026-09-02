@@ -452,15 +452,31 @@ function extractNodeCategories(svg: string): Map<string, string> {
 
 /**
  * Determines whether an edge (identified by its `data-id`, always
- * `L_{source}_{target}_{index}` — confirmed against a real render) connects
- * two nodes that are BOTH categorized `removed`. Node names can themselves
- * contain underscores, so `source`/`target` can't just be split on "_" —
- * instead this tries every known node name as a candidate source prefix and
+ * `L_{source}_{target}_{index}` — confirmed against a real render) touches
+ * a `removed` node on EITHER end. Node names can themselves contain
+ * underscores, so `source`/`target` can't just be split on "_" — instead
+ * this tries every known node name as a candidate source prefix and
  * accepts the split only when the remainder (minus the trailing index) is
  * *also* a known node name, which is unambiguous in practice since a real
  * split must land on two real node names.
+ *
+ * Round-6 correction, from a fresh adversarial review against a REAL
+ * FastAPI diff (not the synthetic example this was first built against):
+ * the original rule only suppressed the glow when BOTH endpoints were
+ * `removed`, on the theory that "a still-live node's severed connection"
+ * was worth highlighting boldly. Real data proved that theory wrong: a
+ * genuinely deleted file (`backend_pre_start.py`, dashed red) with a
+ * bold, glowing, actively-animated "calls" edge still pointing INTO it
+ * from a live node (`prestart.sh -->|calls| backend_pre_start.py`) reads
+ * as a flat contradiction — review's words, "a file cannot simultaneously
+ * be deleted by this PR and actively invoked by live code in the same
+ * diagram" — not as a deliberate highlight. The underlying logic also
+ * doesn't hold up: a `removed` node represents code that no longer
+ * exists in the repository, so NO edge touching it — from either
+ * direction — can represent current, live data flow. Only-one-endpoint-
+ * removed is now treated the same as both-removed.
  */
-function isRemovedToRemovedEdge(dataId: string | null, categories: Map<string, string>): boolean {
+function touchesRemovedNode(dataId: string | null, categories: Map<string, string>): boolean {
   if (!dataId) return false;
   const m = /^L_(.+)_\d+$/.exec(dataId);
   if (!m) return false;
@@ -469,7 +485,7 @@ function isRemovedToRemovedEdge(dataId: string | null, categories: Map<string, s
     if (!sourceAndTarget.startsWith(`${source}_`)) continue;
     const target = sourceAndTarget.slice(source.length + 1);
     if (categories.has(target)) {
-      return categories.get(source) === "removed" && categories.get(target) === "removed";
+      return categories.get(source) === "removed" || categories.get(target) === "removed";
     }
   }
   return false;
@@ -495,22 +511,24 @@ function isRemovedToRemovedEdge(dataId: string | null, categories: Map<string, s
  * each edge's own `d` geometry straight out of the rendered SVG rather
  * than asking Mermaid/the model to cooperate with anything.
  *
- * Bug fix (found generating a real removed-state example, 2026-09-02): the
- * blanket `.flowchart-link` rule below used to apply to every edge with no
- * awareness of what it connects, so a link between two nodes THIS PR
- * DELETES rendered with the exact same vivid "alive and pulsing" glow as a
- * link between two brand-new nodes — flatly contradicting the dashed-red
- * "gone" styling already applied to the nodes themselves. Edges whose
- * endpoints are both `removed` are now re-tagged with REMOVED_EDGE_CLASS
- * and given their own rule (declared after the general one, so its
- * `!important`s win) matching the removed-node palette: dim red, dashed, no
- * glow — "this connection is gone too," not "this connection is thriving."
+ * Bug fix (found generating a real removed-state example, 2026-09-02; rule
+ * broadened after a round-6 review against a real FastAPI diff, see
+ * touchesRemovedNode() above): the blanket `.flowchart-link` rule below
+ * used to apply to every edge with no awareness of what it connects, so a
+ * link touching a node THIS PR DELETES rendered with the exact same vivid
+ * "alive and pulsing" glow as a link between two brand-new nodes — flatly
+ * contradicting the dashed-red "gone" styling already applied to the node
+ * itself. Any edge touching a `removed` node on either end is now re-
+ * tagged with REMOVED_EDGE_CLASS and given its own rule (declared after
+ * the general one, so its `!important`s win) matching the removed-node
+ * palette: dim red, dashed, no glow — "this connection is gone too," not
+ * "this connection is thriving."
  */
 export function applyBoldGlowStyling(svg: string): string {
   const nodeCategories = extractNodeCategories(svg);
   const markedSvg = svg.replace(EDGE_PATH_TAG_RE, (tag) => {
     const dataId = extractAttr(tag, "data-id");
-    if (!isRemovedToRemovedEdge(dataId, nodeCategories)) return tag;
+    if (!touchesRemovedNode(dataId, nodeCategories)) return tag;
     return tag.replace(/\bclass="([^"]*)"/, (_m, cls: string) => `class="${cls} ${REMOVED_EDGE_CLASS}"`);
   });
 

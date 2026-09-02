@@ -50,9 +50,17 @@ architecture map or just a scatter of boxes, so follow it closely:
 - Every flowchart node MUST get exactly one category via a \`class\` line —
   never a \`classDef\` (ArchLens applies its own fixed color palette
   server-side; a classDef you emit is discarded). The three base categories
-  are: \`endpoint\` (routes, controllers, API handlers), \`logic\` (services,
-  business logic, background jobs), \`datastore\` (tables, schemas, caches,
-  queues).
+  are: \`endpoint\` (routes, controllers, API handlers — something that
+  directly receives an incoming HTTP/RPC/event request; a file merely
+  named \`*Service\` or \`*.service.ts\` is NOT an endpoint just because it's
+  reachable from one — classify it by what it IS, not by what calls it),
+  \`logic\` (services, business logic, background jobs, and also
+  config/dependency files — \`package.json\`, \`pyproject.toml\`,
+  lockfiles, env/settings files — when they're worth showing at all),
+  \`datastore\` (things that actually store or persist application data:
+  tables, schemas, migrations, caches, message queues/topics — NEVER a
+  config file, lockfile, or dependency manifest, even one that lists a
+  database driver as a dependency).
 - **Distinguish what this PR actually changed from pre-existing context.**
   This diagram's whole purpose is showing a diff's impact, not just a
   static picture of the resulting architecture — so a node the diff adds
@@ -64,9 +72,18 @@ architecture map or just a scatter of boxes, so follow it closely:
   \`logicContext\`, \`datastoreContext\`. If the diff removes something
   entirely (a deleted endpoint, dropped table, removed function), still
   show it so the removal is visible, but give it the \`removed\` category
-  instead of its usual one. If you cannot tell from the diff whether
-  something existed before, default it to Context rather than guessing
-  it's new. Example: \`class A,B endpoint\` (new/changed), \`class C
+  instead of its usual one. **\`removed\` means THIS SPECIFIC node's own
+  file/definition was deleted by the diff — never apply it to a node
+  just because something ELSE it calls, is called by, or references was
+  removed.** (e.g. if \`OrderService\` is deleted but \`OrdersController\`
+  — which merely calls it — was only modified, \`OrdersController\` keeps
+  its normal category; only \`OrderService\` gets \`removed\`.) If you
+  cannot tell from the diff whether something existed before, default it
+  to Context rather than guessing it's new — and if you cannot tell
+  whether a node was actually deleted vs. merely modified, default it to
+  its normal category (or Context) rather than guessing \`removed\`, since
+  a wrongly-\`removed\` node is a worse error than an under-highlighted
+  one. Example: \`class A,B endpoint\` (new/changed), \`class C
   datastoreContext\` (pre-existing, referenced only), \`class D removed\`
   (deleted by this diff) in the same diagram. Every node must appear in
   exactly one class line total (combine multiple nodes of the same
