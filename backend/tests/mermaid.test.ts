@@ -253,7 +253,7 @@ describe("appendLegend", () => {
 
   it("draws the legend inside a bordered card rather than loose floating text", () => {
     const withLegend = appendLegend(sampleSvg, "flowchart");
-    expect(withLegend).toContain('stroke="#30363d"');
+    expect(withLegend).toContain('stroke="#6e7681"');
   });
 
   it("is a no-op for sequenceDiagram, where the category legend doesn't apply", () => {
@@ -300,6 +300,29 @@ describe("renderMermaidToSvg (integration)", () => {
     });
     expect(svg).toContain("#0d1117"); // background
     expect(svg).toContain("#58a6ff"); // endpoint accent
+  }, 30_000);
+
+  // Round-6 fix, from the round-5 adversarial review ("low-contrast
+  // subgraph borders"): the old #30363d measured only 1.55:1 contrast
+  // against the #0d1117 canvas (WCAG's own floor for a graphical boundary
+  // is 3:1) -- effectively invisible. Confirms the real rendered output
+  // uses the new, actually-visible #6e7681 and never regresses back to the
+  // old value, for both a flowchart's subgraph borders and a sequence
+  // diagram's actor lifelines (same mistake, same fix, both places).
+  it("renders subgraph borders and actor lifelines with real, WCAG-passing contrast instead of the old near-invisible gray", async () => {
+    const { svg: flowchartSvg } = await renderMermaidToSvg(
+      'flowchart TD\n  subgraph API["API Layer"]\n    A["x"]\n  end\n  A --> B["y"]\n  class A endpoint\n  class B logic\n  class API endpointRegion',
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+    );
+    expect(flowchartSvg).toContain("#6e7681");
+    expect(flowchartSvg).not.toContain("#30363d");
+
+    const { svg: sequenceSvg } = await renderMermaidToSvg(
+      "sequenceDiagram\n  participant A\n  participant B\n  A->>B: hello",
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+    );
+    expect(sequenceSvg).toContain("#6e7681");
+    expect(sequenceSvg).not.toContain("#30363d");
   }, 30_000);
 
   it("bakes a legend into the real rendered flowchart output end to end", async () => {

@@ -59,14 +59,31 @@ export const ARCHLENS_THEME_CONFIG = {
     fontFamily: FONT_STACK,
     fontSize: "16px",
     clusterBkg: "#161b22",
-    clusterBorder: "#30363d",
+    // Round-6 fix, from the round-5 adversarial review ("low-contrast
+    // subgraph borders"): #30363d against the #0d1117 canvas measures only
+    // 1.55:1 contrast (WCAG's own floor for a graphical boundary like this
+    // is 3:1) — computed, not eyeballed, with the same relative-luminance
+    // formula WCAG 2.1 SC 1.4.11 uses. At that ratio a subgraph's outline is
+    // effectively invisible against the near-black canvas, which undercuts
+    // the one piece of structure (API/Logic/Data grouping) the product's
+    // whole pitch depends on being legible at a glance. #6e7681 — a neutral
+    // GitHub Primer gray, not a fourth accent color competing with the
+    // endpoint/logic/datastore blue/green/purple — measures 4.12:1 against
+    // the canvas and 3.77:1 against the legend card's own #161b22 fill
+    // (also updated below to match), comfortably clearing the bar while
+    // still reading as "a muted boundary," not "another category."
+    clusterBorder: "#6e7681",
     titleColor: "#e6edf3",
     edgeLabelBackground: "#0d1117",
     nodeTextColor: "#e6edf3",
     actorBkg: "#1c2128",
     actorBorder: "#58a6ff",
     actorTextColor: "#e6edf3",
-    actorLineColor: "#30363d",
+    // Same low-contrast mistake as clusterBorder above, same fix, applied
+    // here too for consistency: a sequence diagram's actor lifelines were
+    // just as washed out against the dark canvas as flowchart subgraph
+    // borders were.
+    actorLineColor: "#6e7681",
     signalColor: "#e6edf3",
     signalTextColor: "#e6edf3",
     // Round-2 fix: a review caught that Mermaid's default note styling
@@ -132,9 +149,16 @@ const CATEGORY_CLASS_DEFS = [
   "classDef endpointContext fill:#161b22,stroke:#58a6ff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef logicContext fill:#161b22,stroke:#7ee787,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
   "classDef datastoreContext fill:#161b22,stroke:#bc8cff,stroke-width:1px,stroke-dasharray:4 3,color:#8b949e",
-  "classDef endpointRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
-  "classDef logicRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
-  "classDef datastoreRegion fill:#0d1117,stroke:#30363d,color:#e6edf3",
+  // Round-6 fix: matches clusterBorder's #6e7681 (see
+  // ARCHLENS_THEME_CONFIG above for the contrast-ratio math). These
+  // *Region classDefs carry `!important` and are what the model actually
+  // applies to each subgraph (per llm.ts's SYSTEM_PROMPT: `class API
+  // endpointRegion` etc. right after the subgraph's `end`), so they're the
+  // rule that wins in the real rendered output — clusterBorder is the
+  // fallback for the rarer case a subgraph goes unclassed.
+  "classDef endpointRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
+  "classDef logicRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
+  "classDef datastoreRegion fill:#0d1117,stroke:#6e7681,color:#e6edf3",
   "classDef removed fill:#2d1a1f,stroke:#f85149,stroke-width:1.5px,stroke-dasharray:2 2,color:#ffa198",
 ].join("\n");
 
@@ -300,7 +324,7 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
   const legendGroup = `<g transform="translate(0, ${height})">` +
     `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#0d1117"/>` +
     `<g transform="translate(${outerMargin}, ${outerMargin})">` +
-    `<rect x="0" y="0" width="${cardWidth}" height="${cardHeight}" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>` +
+    `<rect x="0" y="0" width="${cardWidth}" height="${cardHeight}" rx="6" fill="#161b22" stroke="#6e7681" stroke-width="1"/>` +
     rows +
     `</g></g>`;
 
