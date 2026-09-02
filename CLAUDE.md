@@ -636,3 +636,53 @@ limitation (disclosed, not newly regressed). A fresh round-6 adversarial
 review — against freshly generated screenshots, per item 15's own
 lesson — is the next step once the polish items above are addressed, and
 should repeat until it scores >= 9.
+
+## 17. Low-contrast borders fixed; ELK back-edge spaghetti measurably shrunk, not eliminated (2026-09-02)
+
+**Subgraph border / legend / actor-lifeline contrast** (round-5 review):
+`clusterBorder`/the `*Region` classDefs/the legend card border/
+`actorLineColor` all used `#30363d` against the `#0d1117` canvas —
+computed contrast 1.55:1 via WCAG 2.1's own relative-luminance formula
+(1.4.11's own floor for a graphical boundary is 3:1), effectively
+invisible. Switched all four to `#6e7681`, a neutral GitHub Primer gray
+rather than a fifth accent color: 4.12:1 against the canvas, 3.77:1
+against the legend card's own fill. Verified with a new end-to-end test
+(flowchart subgraph + sequence lifeline) and a re-rendered real
+10-file-stress-test screenshot — borders and the legend card are now
+clearly visible outlines instead of near-invisible dark-on-dark.
+
+**ELK "spaghetti" back-edges** (round-5 review): a true back edge — one
+whose target sits in an earlier architectural layer than its source
+(the stress test's `EventBus -->|subscribe| RefundWorker`: Data, the
+bottom subgraph, calling back up into Logic, the middle one) — will
+always need some long route; that's inherent to layered graph drawing,
+not fully fixable. But empirically testing every `config.elk.*` tunable
+mermaid's layout-elk wrapper exposes against the real stress-test
+diagram (measuring the actual edge's path length/bbox for each, not
+eyeballing) found `mergeEdges: true` + `nodePlacementStrategy:
+NETWORK_SIMPLEX` cuts that edge's length ~25%, its bounding box ~65%,
+and overall diagram height ~18% — confirmed visually too. Two other
+options (`SIMPLE`/`LINEAR_SEGMENTS` node placement) made it measurably
+**worse**; three had no effect at all on this graph shape. Honest
+framing for whoever reviews this next: this is a real, verified
+improvement, not a fix — a genuine back edge will still be the visually
+longest edge in the diagram, just now hugging its own local margin
+instead of the whole canvas.
+
+Both changes re-verified against the real 10-file stress test AND two
+untested-before real external-repo diffs (FastAPI, NestJS) end to end
+through the full production pipeline — including a genuine self-loop
+edge (`DB -->|pool_pre_ping added| DB`) and an edge targeting a subgraph
+container directly (`RoleSeed --> Persistence`), both real cases neither
+previously exercised, both rendering cleanly under the new ELK config.
+The FastAPI example also happened to contain a real removed-to-removed
+edge pair (`BPRE -->|tested by| TESTBPRE`) that confirmed item 16's fix
+generalizes correctly to genuinely new real-world data, not just the
+synthetic example it was built against. Full suite: 131/131.
+
+**Remaining from item 15's list**: the legend's boxed-afterthought
+placement, and the token-overlap misclassification limitation
+(disclosed, not newly regressed). A fresh round-6 adversarial review —
+against freshly generated screenshots — is next, and should repeat
+until it scores >= 9, per the user's explicit gate on payment/billing
+work.
