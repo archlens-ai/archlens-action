@@ -69,7 +69,9 @@ no override is needed there.
 |---|---|---|
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | yes | Quota, cache, and SVG storage — its own Supabase **project**, created inside the same org as any other product on the account, never a shared/reused project |
 | `ANTHROPIC_API_KEY` | yes (default provider) | Diagram generation — issued under its own Anthropic Console project so spend/usage stays attributable to ArchLens even when the account is shared with another product |
-| `ARCHLENS_ANTHROPIC_MODEL` | no | Defaults to `claude-haiku-4-5` |
+| `ARCHLENS_ANTHROPIC_MODEL_SMALL` | no | Model for ordinary diffs. Defaults to `claude-haiku-4-5` |
+| `ARCHLENS_ANTHROPIC_MODEL_LARGE` | no | Model for large/complex diffs (>6 files). Defaults to `claude-sonnet-5` |
+| `ARCHLENS_ANTHROPIC_MODEL` | no | Overrides both of the above and forces every request onto one fixed model, disabling tiering entirely |
 | `ARCHLENS_LLM_PROVIDER` | no | `anthropic` (default), or `openai`/`deepseek` opt-in |
 | `OPENAI_API_KEY` | only if provider=openai | Diagram generation |
 | `DEEPSEEK_API_KEY` | only if provider=deepseek | Diagram generation |
