@@ -1006,3 +1006,143 @@ screenshots reflecting ALL of the above, continuing until it scores
 >= 9, before any payment/billing work per the user's explicit
 instruction: "we will do the payment integration when the score
 reaches >=9 [...] it wont sell until it is really helpfull."
+
+## 21. Model-tier decision (2026-09-04): tiered model selection, not a blanket upgrade — plus two more real bugs found verifying it
+
+Anurag's instruction after item 20's status report: **"okay go ahead
+with option 2"** — accept `claude-haiku-4-5`'s reliability ceiling and
+reconsider the generation model tier, rather than build deterministic
+server-side graph-simplification logic (option 1).
+
+**What actually got shipped is NOT a blanket swap to a bigger model.**
+Before touching any code, measured the real, current thing rather than
+assuming it: fetched live pricing from platform.claude.com/docs
+(2026-09-04) and confirmed by direct Messages API call which model
+strings this account's key can actually reach. `claude-sonnet-5` is
+real and reachable ($2/$10 per MTok in/out) — notably *cheaper* than
+`claude-sonnet-4-5` ($3/$15), so it's the right upgrade target, not
+`claude-sonnet-4-5`.
+
+Two real, load-bearing API incompatibilities were found by testing
+against the live API, not assumed away:
+- `claude-sonnet-5` rejects `temperature` outright (400: "`temperature`
+  is deprecated for this model"). `createAnthropicProvider` now sends
+  it optimistically and retries once without it on that specific error,
+  rather than hardcoding a model-name check (fragile — e.g.
+  "claude-haiku-4-5" also contains the substring "-5").
+- The old `max_tokens: 800` (sized for haiku's shorter output) truncated
+  a real sonnet-5 response mid-diagram (`stop_reason: "max_tokens"`,
+  invalid mermaid). Tiers now get their own budget (small: 1200, large:
+  2500).
+
+**Real cost measurement, not an estimate** (`scripts/measure-model-cost.ts`
+— hits the live API with ArchLens's actual SYSTEM_PROMPT and three real
+diffs: the FastAPI structural-change commit, the NestJS 14-file commit,
+and the synthetic-but-genuinely-structural 10-file scale fixture, now
+shared as `scripts/fixtures/scale-test-files.ts` so `dry-run-live-scale.ts`
+and the cost script can't drift apart): sonnet-5 averaged **~3.2x**
+haiku-4-5's per-call cost ($0.0203 vs $0.0063/generation). Checked
+against real plan limits in `backend/lib/quota.ts` (`solo: 500`,
+`team: 3000`/month) rather than a made-up number: a team-plan customer
+who fully used their 3000/month quota on sonnet-5 for *every* request
+would cost **~$61/month in API alone against $29/month revenue — a real
+loss**, not a thin margin. That is the actual, decision-relevant
+number, and it rules out a blanket upgrade at the current pricing.
+
+**What the same real test also showed**: sonnet-5's reliability
+improvement is real and concentrated exactly where haiku-4-5 kept
+failing. On the synthetic 10-file scale fixture (coarse-mode cap = 10):
+haiku-4-5 produced **14 nodes** (40% over the cap, the exact overshoot
+item 20 flagged as unresolved) while sonnet-5 produced **exactly 10**,
+via better instruction-following on "merge closely related files," not
+by dropping content. On the NestJS commit used throughout items 19-20
+as the "14-file scale case" — turns out that commit (`5257ca1`, "add
+`readonly` modifier to injected constructor parameters") has **zero
+real structural content**; haiku-4-5 hallucinated a detailed 14-node
+diagram with invented "uses" edges (including more of the exact
+self-loop pattern item 20 fixed) for a diff that changes nothing
+architecturally, while sonnet-5 correctly answered `flowchart TD\n  A["No
+structural change detected"]`. Worth being honest about: several of
+items 19-20's diagnosed bugs were caught by reviewing haiku-4-5's
+elaborate but partly-fabricated answer to a diff that should never have
+produced a rich diagram at all — the fixes themselves are still good
+general hardening, but the specific test case that surfaced them was
+noisier than it looked at the time.
+
+**Resolution: tier by diff size instead of picking one model for
+everything.** `llm.ts` gains `createTieredAnthropicProvider` — ordinary
+diffs (`files.length <= COARSE_MODE_THRESHOLD`, the same constant that
+already switches the prompt into COARSE MODE, so the two decisions can
+never drift apart) stay on `claude-haiku-4-5`; large/complex diffs
+escalate to `claude-sonnet-5`. `LlmProvider.generateMermaid` gained an
+optional `opts.fileCount` param (additive, backward-compatible with
+every existing mock/implementation) and `generate-handler.ts` threads
+`body.files.length` through on both the initial call and the repair
+retry. `getProvider()` reads `ARCHLENS_ANTHROPIC_MODEL_SMALL` /
+`_LARGE` (defaults: haiku-4-5 / sonnet-5); the old
+`ARCHLENS_ANTHROPIC_MODEL` still works as a full override that disables
+tiering entirely, for anyone who wants one fixed model. `backend/.env`
+updated accordingly. This captures most of the reliability win (the
+failures were always concentrated in COARSE MODE, never in ordinary
+small diffs, across this whole project's testing history) while
+keeping the worst-case team-tier cost close to where it was: a
+fully-maxed 3000/month customer whose diffs are a realistic mix of
+small (cheap tier) and large (expensive tier) costs meaningfully less
+than an unconditional sonnet-5 switch, though Anurag should know the
+exact real-world mix (what fraction of a typical team's PRs are >6
+files) isn't something this sandbox can measure — that number can only
+come from real production usage, not another synthetic test.
+
+**Two more real, previously-undiscovered bugs found while verifying
+this end to end against the live API** (neither is about model choice
+— both are pre-existing latent bugs this testing pass happened to
+surface):
+1. **`reconcileDiffClassification`'s `removed`-rescue logic could
+   wrongly rescue a genuinely deleted file back to `logicContext`** on
+   pure token-collision with an unrelated file elsewhere in the same
+   diff. Caught live on the real FastAPI commit: `backend_pre_start.py`
+   was genuinely deleted and correctly marked `removed` by the model,
+   but its label tokenizes to include "start" — which is *also* a token
+   of `tests-start.sh`, a file merely modified elsewhere in the same
+   diff. That one coincidental word-overlap alone satisfied the old
+   `hasChanged` check and wrongly un-removed a real deletion. Fixed by
+   also requiring the label have no removed-evidence of its own
+   (`hasChanged && !hasRemoved`, mirroring the precedence rule the
+   base-category branch already used) — verified by reproducing the
+   exact failure with a minimal repro script before fixing, then
+   confirming the real FastAPI diagram renders `backend_pre_start.py`/
+   `tests_pre_start.py` correctly red/dashed/removed after the fix, not
+   just via the new unit test.
+2. **`validateMermaidSyntax` could not catch a sequenceDiagram
+   containing flowchart-only `class`/`classDef` lines** — reproduced
+   2/2 on live API calls (not a one-off flake): the model sometimes
+   bleeds the flowchart category system into sequence output. The old
+   check only looked at the first line's declared type and a fixed
+   disallowed-content list, so it reported "valid," which meant
+   generate-handler's one repair-retry window (which only fires when
+   validation reports invalid) never opened at all — the real mermaid
+   parser only rejected it much later, inside the render step, as an
+   unrecoverable 502 with a wasted API call and a wasted render attempt.
+   Fixed by rejecting a `class`/`classDef` line whenever the diagram is
+   declared `sequenceDiagram`, so this now gets one real repair attempt
+   instead of failing outright.
+
+**Full verification, real not assumed**: 145 tests passing (up from
+133 at the start of this item), `tsc --noEmit` clean. Real live-API
+re-runs, not just unit tests, for every claim above: the 10-file
+scale fixture (exactly 10 nodes, clean categories, fresh screenshot),
+the real FastAPI commit both before the removed-rescue fix (confirmed
+the bug: `PreStart`/`PreStartTests` wrongly rendered `logicContext`)
+and after (confirmed the fix: correctly `removed`, fresh screenshot),
+and the live sequence-diagram fixture (fresh screenshot, clean
+first-attempt generation).
+
+**Status toward the score >= 9 gate**: not re-scored this round —
+this item was scoped to the model-tier decision and the bugs found
+verifying it, not a full fresh adversarial review pass. The next step
+is exactly what item 20 already queued: another fresh adversarial
+review round against fresh screenshots (now reflecting the tiered
+model too), continuing until it scores >= 9, before any payment/
+billing work, per Anurag's unchanged instruction: "we will do the
+payment integration when the score reaches >=9 [...] it wont sell
+until it is really helpfull."

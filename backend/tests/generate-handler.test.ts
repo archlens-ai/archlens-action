@@ -30,7 +30,7 @@ function makeDeps(overrides: { llmOutput?: string | string[] } = {}) {
   const outputs = Array.isArray(overrides.llmOutput)
     ? [...overrides.llmOutput]
     : [overrides.llmOutput ?? "flowchart TD\n  A --> B"];
-  const generateMermaid = vi.fn(async () => outputs.shift() ?? "flowchart TD\n  A --> B");
+  const generateMermaid = vi.fn(async (_prompt: string, _opts?: { fileCount?: number }) => outputs.shift() ?? "flowchart TD\n  A --> B");
   const llm: LlmProvider = { name: "fake", generateMermaid };
 
   const render = vi.fn(async (source: string) => ({ svg: `<svg>${source}</svg>` }));
@@ -127,5 +127,20 @@ describe("handleGenerateRequest", () => {
     const deps = makeDeps();
     const { status } = await handleGenerateRequest(makeBody({ files: [] }), "alk_live_valid", deps);
     expect(status).toBe(400);
+  });
+
+  // A tiered LlmProvider (see createTieredAnthropicProvider in llm.ts) picks
+  // its model from opts.fileCount -- if the handler stopped passing that
+  // through, every request would silently fall back to the cheap tier
+  // regardless of diff size, with no test failure to catch it.
+  it("passes the diff's file count through to the LLM provider", async () => {
+    const deps = makeDeps();
+    const files = Array.from({ length: 9 }, (_, i) => ({
+      filename: `src/services/service${i}.ts`,
+      status: "modified" as const,
+      patch: `+export function handle${i}() {}`,
+    }));
+    await handleGenerateRequest(makeBody({ files }), "alk_live_valid", deps);
+    expect(deps.generateMermaid).toHaveBeenCalledWith(expect.any(String), { fileCount: 9 });
   });
 });

@@ -6,9 +6,25 @@ export interface DiffFile {
 
 export type DiagramTypeHint = "flowchart" | "sequence" | "auto";
 
+export interface GenerateMermaidOpts {
+  /**
+   * Number of files in the diff this prompt was built from. Optional and
+   * additive -- existing callers/mocks that only implement
+   * generateMermaid(prompt) remain valid LlmProviders. Used by
+   * createTieredAnthropicProvider to decide which model tier handles this
+   * request (see the 2026-09-04 model-tier decision below): the reliability
+   * problems repeatedly found in adversarial review (node-cap overshoot,
+   * self-loop edges, hallucinated relationships) concentrate specifically
+   * in COARSE MODE (files.length > COARSE_MODE_THRESHOLD), not in ordinary
+   * small diffs -- so escalating model tier only there gets most of the
+   * reliability win without paying the higher per-call cost on every PR.
+   */
+  fileCount?: number;
+}
+
 export interface LlmProvider {
   name: string;
-  generateMermaid(prompt: string): Promise<string>;
+  generateMermaid(prompt: string, opts?: GenerateMermaidOpts): Promise<string>;
 }
 
 export interface OpenAiCompatConfig {
@@ -18,7 +34,7 @@ export interface OpenAiCompatConfig {
   model: string;
 }
 
-const SYSTEM_PROMPT = `You are ArchLens, a senior software architect. You are given a compressed,
+export const SYSTEM_PROMPT = `You are ArchLens, a senior software architect. You are given a compressed,
 structural diff from a single GitHub pull request (comment/log lines already
 stripped). Produce ONE Mermaid diagram describing the system-level impact of
 this diff: what components/endpoints/tables/functions changed and how they
@@ -171,7 +187,11 @@ architecture map or just a scatter of boxes, so follow it closely:
 // "HARD CAP" framing rather than once with softer language — a cap a
 // smaller model already blew past by 25% needs to be stated more
 // forcefully, not just left as-is and hoped to land better next time.
-const COARSE_MODE_THRESHOLD = 6;
+// Exported so getProvider()'s model-tier escalation (see
+// createTieredAnthropicProvider) uses the exact same number that triggers
+// COARSE MODE in the prompt, rather than a second, independently-tunable
+// threshold that could quietly drift out of sync with this one.
+export const COARSE_MODE_THRESHOLD = 6;
 const COARSE_MODE_MAX_NODES = 10;
 
 export function buildPrompt(files: DiffFile[], diagramType: DiagramTypeHint): string {
@@ -271,6 +291,18 @@ function stripCodeFence(text: string): string {
 export interface AnthropicConfig {
   apiKey: string;
   model: string;
+  /**
+   * Default 800 was sized for claude-haiku-4-5's observed output length
+   * (always well under 550 tokens across every real diagram this project
+   * generated). A real measured test of claude-sonnet-5 on the exact same
+   * prompt (scripts/measure-model-cost.ts, 2026-09-04) hit max_tokens=800
+   * mid-diagram (stop_reason: "max_tokens", truncated/invalid mermaid) --
+   * sonnet-5 is more verbose for the same instructions. createTieredAnthropicProvider
+   * sets a higher value for its "large" tier; this default is left alone so
+   * existing single-model callers (tests, other deployments still pinned to
+   * haiku) are unaffected.
+   */
+  maxTokens?: number;
 }
 
 interface AnthropicContentBlock {
@@ -289,6 +321,31 @@ export function createAnthropicProvider(
   cfg: AnthropicConfig,
   fetchImpl: typeof fetch = fetch
 ): LlmProvider {
+  async function callMessages(prompt: string, includeTemperature: boolean) {
+    return fetchImpl("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": cfg.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: cfg.maxTokens ?? 800,
+        // Real, measured API incompatibility (not a guess): a direct
+        // Messages API call with claude-sonnet-5 rejected this request
+        // outright with 400 "`temperature` is deprecated for this model."
+        // Rather than hardcode a model-name check (fragile -- e.g.
+        // "claude-haiku-4-5" also contains the substring "-5"), send it
+        // optimistically and fall back once on that specific error, so any
+        // future model with the same restriction is handled automatically.
+        ...(includeTemperature ? { temperature: 0.2 } : {}),
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+  }
+
   return {
     name: "anthropic",
     async generateMermaid(prompt: string): Promise<string> {
@@ -296,21 +353,16 @@ export function createAnthropicProvider(
         throw new Error('Missing API key for LLM provider "anthropic"');
       }
 
-      const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": cfg.apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: cfg.model,
-          max_tokens: 800,
-          temperature: 0.2,
-          system: SYSTEM_PROMPT,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
+      let res = await callMessages(prompt, true);
+
+      if (!res.ok && res.status === 400) {
+        const errBody = await res.text().catch(() => "");
+        if (/temperature.*deprecated/i.test(errBody)) {
+          res = await callMessages(prompt, false);
+        } else {
+          throw new Error(`LLM provider "anthropic" returned ${res.status}: ${errBody.slice(0, 500)}`);
+        }
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -327,10 +379,70 @@ export function createAnthropicProvider(
   };
 }
 
+export interface TieredAnthropicConfig {
+  apiKey: string;
+  /** Used for diffs at or below the tier threshold -- the common case. */
+  smallModel: string;
+  /** Used for diffs above the tier threshold (COARSE MODE), where the
+   * smaller model has repeatedly, measurably failed to hold the node-count
+   * cap and produced hallucinated/self-referential edges. */
+  largeModel: string;
+  /** Defaults to COARSE_MODE_THRESHOLD -- the same number that switches the
+   * prompt itself into COARSE MODE, so the model escalation and the prompt
+   * framing always agree on what counts as "a large diff." */
+  threshold?: number;
+}
+
+/**
+ * Escalates model tier by diff size rather than always using the pricier
+ * model for every request. Decision (2026-09-04, see CLAUDE.md item 21):
+ * a real measured cost comparison (scripts/measure-model-cost.ts) found
+ * claude-sonnet-5 costs ~3.2x claude-haiku-4-5 per call, and the team
+ * plan's existing 3000/mo quota (backend/lib/quota.ts) would run at a LOSS
+ * against $29/mo if every one of those 3000 calls used sonnet-5
+ * unconditionally ($60.90 in API cost alone). But the same real test also
+ * showed sonnet-5 fixes the two concrete, previously-diagnosed reliability
+ * failures on the exact diffs that exposed them: it held the 10-node
+ * coarse-mode cap exactly where haiku-4-5 overshot to 14 (40% over), and it
+ * correctly recognized a diff with no real structural content instead of
+ * hallucinating detailed-but-fabricated relationships. Both failures only
+ * ever showed up on large/complex diffs -- ordinary small diffs were
+ * reliably fine on haiku-4-5 throughout this project's whole review
+ * history -- so tiering by size captures most of the reliability benefit at
+ * a fraction of the blanket-upgrade cost.
+ */
+export function createTieredAnthropicProvider(
+  cfg: TieredAnthropicConfig,
+  fetchImpl: typeof fetch = fetch
+): LlmProvider {
+  const threshold = cfg.threshold ?? COARSE_MODE_THRESHOLD;
+  const small = createAnthropicProvider({ apiKey: cfg.apiKey, model: cfg.smallModel, maxTokens: 1200 }, fetchImpl);
+  const large = createAnthropicProvider({ apiKey: cfg.apiKey, model: cfg.largeModel, maxTokens: 2500 }, fetchImpl);
+
+  return {
+    name: "anthropic",
+    async generateMermaid(prompt: string, opts?: GenerateMermaidOpts): Promise<string> {
+      const useLarge = (opts?.fileCount ?? 0) > threshold;
+      return (useLarge ? large : small).generateMermaid(prompt);
+    },
+  };
+}
+
 export interface LlmEnv {
   ARCHLENS_LLM_PROVIDER?: string;
   ANTHROPIC_API_KEY?: string;
+  /**
+   * Forces every request onto a single Anthropic model, bypassing tiering
+   * below entirely. Kept for back-compat with the pre-2026-09-04 config and
+   * as an escape hatch (e.g. pin everything to one model for a controlled
+   * experiment) -- takes priority over ARCHLENS_ANTHROPIC_MODEL_SMALL/LARGE
+   * when set.
+   */
   ARCHLENS_ANTHROPIC_MODEL?: string;
+  /** Model for diffs at/below the tier threshold. Default: claude-haiku-4-5. */
+  ARCHLENS_ANTHROPIC_MODEL_SMALL?: string;
+  /** Model for diffs above the tier threshold (COARSE MODE). Default: claude-sonnet-5. */
+  ARCHLENS_ANTHROPIC_MODEL_LARGE?: string;
   OPENAI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
 }
@@ -374,10 +486,18 @@ export function getProvider(env: LlmEnv, fetchImpl: typeof fetch = fetch): LlmPr
     );
   }
 
-  return createAnthropicProvider(
+  if (env.ARCHLENS_ANTHROPIC_MODEL) {
+    return createAnthropicProvider(
+      { apiKey: env.ANTHROPIC_API_KEY ?? "", model: env.ARCHLENS_ANTHROPIC_MODEL },
+      fetchImpl
+    );
+  }
+
+  return createTieredAnthropicProvider(
     {
       apiKey: env.ANTHROPIC_API_KEY ?? "",
-      model: env.ARCHLENS_ANTHROPIC_MODEL ?? "claude-haiku-4-5",
+      smallModel: env.ARCHLENS_ANTHROPIC_MODEL_SMALL ?? "claude-haiku-4-5",
+      largeModel: env.ARCHLENS_ANTHROPIC_MODEL_LARGE ?? "claude-sonnet-5",
     },
     fetchImpl
   );

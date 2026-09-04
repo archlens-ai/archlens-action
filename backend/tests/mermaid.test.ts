@@ -45,6 +45,33 @@ describe("validateMermaidSyntax", () => {
     const huge = "flowchart TD\n" + "  A --> B\n".repeat(5000);
     expect(validateMermaidSyntax(huge).valid).toBe(false);
   });
+
+  // Round-10 finding: a real, reproducible (2/2 live API runs) case of the
+  // model bleeding flowchart-only `class`/`classDef` syntax into a
+  // sequenceDiagram response. Without this check, validateMermaidSyntax
+  // reported "valid" (it only looked at the first line's declared type and
+  // a fixed disallowed-content list), so generate-handler's one repair
+  // retry never fired -- the real mermaid parser only rejected it much
+  // later, inside the render step, as an unrecoverable failure.
+  it("rejects a sequenceDiagram that contains a flowchart-only 'class' statement", () => {
+    const result = validateMermaidSyntax(
+      "sequenceDiagram\n  A->>B: hi\n  class A,B endpoint"
+    );
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/class.*classDef/i);
+  });
+
+  it("rejects a sequenceDiagram that contains a flowchart-only 'classDef' statement", () => {
+    const result = validateMermaidSyntax(
+      "sequenceDiagram\n  A->>B: hi\n  classDef endpoint fill:#000"
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  it("does not flag a flowchart's own legitimate 'class' statement", () => {
+    const result = validateMermaidSyntax('flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint');
+    expect(result.valid).toBe(true);
+  });
 });
 
 describe("applyArchLensStyling", () => {

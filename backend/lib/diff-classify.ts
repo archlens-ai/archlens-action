@@ -411,7 +411,23 @@ export function reconcileDiffClassification(
         }
         const tokens = tokenize(label);
         const hasChanged = tokens.some((t) => changed.has(t));
-        if (hasChanged) {
+        // Round-10 fix: a real live test (fastapi real-repo, after
+        // switching in a tiered model) caught this rescue firing on a
+        // GENUINELY deleted file. `BackendPreStart["backend_pre_start.py"]`
+        // was correctly marked `removed` by the model, but its label
+        // tokenizes to {"backend","pre","start",...}, and "start" ALSO
+        // happens to be a token of `tests-start.sh` — an unrelated file
+        // that was merely modified elsewhere in the same diff. That
+        // coincidental single-word overlap was enough to satisfy
+        // `hasChanged` and rescue a real deletion back to "still exists,
+        // just unclassifiable." Requiring the label to have NO removed-
+        // evidence of its own closes this: `backend_pre_start.py`'s other
+        // tokens ("backend", "backend_pre_start") are unique removed-
+        // evidence, so hasRemoved is true here and the rescue correctly
+        // does not fire. Mirrors the same hasRemoved-takes-precedence rule
+        // already used for the base-category branch below.
+        const hasRemoved = tokens.some((t) => removed.has(t));
+        if (hasChanged && !hasRemoved) {
           if (!regrouped.has("logicContext")) regrouped.set("logicContext", []);
           regrouped.get("logicContext")!.push(id);
         } else {

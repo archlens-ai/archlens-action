@@ -289,6 +289,32 @@ describe("reconcileDiffClassification", () => {
     expect(result).toBe(source);
   });
 
+  // Round-10 fix: a real live run (fastapi real-repo, right after switching
+  // in a tiered/larger model, unrelated to the model choice itself) caught
+  // this exact false rescue. `backend_pre_start.py` was genuinely deleted
+  // by the diff and correctly marked `removed` by the model -- but its
+  // label tokenizes to {"backend","pre","start",...}, and "start" is ALSO
+  // a token of `tests-start.sh`, an unrelated file merely MODIFIED
+  // elsewhere in the same diff. That coincidental one-word overlap alone
+  // used to satisfy `hasChanged` and wrongly rescue a real deletion into
+  // "still present, just unclassifiable." A node with its OWN unique
+  // removed-evidence ("backend", not shared with anything else in the
+  // diff) must not be rescued just because it also shares one generic
+  // word-piece with something unrelated that changed.
+  it("does not rescue a genuinely removed node just because it shares one generic token with an unrelated file that changed", () => {
+    const mixedFiles: DiffPatchFile[] = [
+      { filename: "backend/app/backend_pre_start.py", status: "removed", patch: "-def init():\n-    pass" },
+      { filename: "scripts/tests-start.sh", status: "modified", patch: "+echo start" },
+    ];
+    const source = [
+      'flowchart TD',
+      '  A["backend_pre_start.py"]',
+      '  class A removed',
+    ].join("\n");
+    const result = reconcileDiffClassification(source, mixedFiles);
+    expect(result).toBe(source);
+  });
+
   // Round-7 addition: a real Anthropic-generated diagram (same FastAPI
   // round-8 run) contained the literal line `class removed removed` --
   // referencing a node ID that was never declared anywhere, spelled

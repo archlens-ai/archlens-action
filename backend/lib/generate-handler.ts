@@ -86,12 +86,19 @@ export async function handleGenerateRequest(
 
   try {
     const prompt = buildPrompt(body.files, body.diagramType);
-    let mermaidSource = await deps.llm.generateMermaid(prompt);
+    // fileCount is passed through so a tiered LlmProvider (see
+    // createTieredAnthropicProvider in llm.ts) can escalate model quality
+    // for large/complex diffs specifically -- that's where the model
+    // reliability problems this project kept finding actually concentrate,
+    // not on ordinary small diffs.
+    const genOpts = { fileCount: body.files.length };
+    let mermaidSource = await deps.llm.generateMermaid(prompt, genOpts);
     let validation = validateMermaidSyntax(mermaidSource);
 
     if (!validation.valid) {
       const repaired = await deps.llm.generateMermaid(
-        buildRepairPrompt(mermaidSource, validation.error ?? "invalid syntax")
+        buildRepairPrompt(mermaidSource, validation.error ?? "invalid syntax"),
+        genOpts
       );
       const repairedValidation = validateMermaidSyntax(repaired);
       if (repairedValidation.valid) {

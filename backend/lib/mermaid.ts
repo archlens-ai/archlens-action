@@ -718,6 +718,30 @@ export function validateMermaidSyntax(source: string): ValidationResult {
     }
   }
 
+  // Round-10 finding: a real, reproducible (2/2 runs) bug -- the model
+  // sometimes emits flowchart-only `class NodeId,... category` /
+  // `classDef ...` lines inside a sequenceDiagram (the category system
+  // from llm.ts's flowchart instructions bleeding into sequence output).
+  // This cheap regex check previously only looked at the FIRST line's
+  // declared type and a fixed disallowed-content list, so it passed this
+  // straight through as "valid" -- the real mermaid parser only rejected
+  // it much later, inside the render step, by which point
+  // generate-handler's one repair-retry window had already closed (that
+  // retry only fires when THIS function first reports invalid). Net
+  // effect: a real API call and a real render attempt were both wasted on
+  // an unrecoverable 502, when a single repair round would likely have
+  // fixed it. Catching it here, before rendering, is what actually gives
+  // the repair prompt a chance to work.
+  if (/^sequenceDiagram/i.test(firstLine)) {
+    const badLine = trimmed.split("\n").find((line) => /^\s*class(Def)?\s+/.test(line));
+    if (badLine) {
+      return {
+        valid: false,
+        error: `sequenceDiagram source contains a flowchart-only "class"/"classDef" statement, which sequenceDiagram does not support: "${badLine.trim()}"`,
+      };
+    }
+  }
+
   return { valid: true };
 }
 
