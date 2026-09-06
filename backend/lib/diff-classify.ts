@@ -596,3 +596,322 @@ export function assignMissingCategories(source: string): string {
 
   return `${source.trimEnd()}\nclass ${missing.join(",")} logicContext\n`;
 }
+
+const SUBGRAPH_OPEN_RE = /^\s*subgraph\s+(\w+)(?:\[[^\]]*\])?\s*$/;
+const SUBGRAPH_END_RE = /^\s*end\s*$/;
+const NODE_DECL_RE = /^(\w+)\s*\[[^\]]*\]\s*$/;
+
+/**
+ * Round-11 finding, from a fresh adversarial review of the tiered-model
+ * output: the real 10-file scale test wraps a SINGLE node
+ * (`Tables["orders + refunds tables"]`) in its own `subgraph
+ * Data["Database"] ... end` block. The reviewer flagged this as
+ * unnecessary visual overhead — a colored border around a box that
+ * already has its own colored border, purely because the model reached
+ * for a subgraph out of habit rather than because grouping added any
+ * information. A subgraph exists to show "these N things belong
+ * together"; with N=1 there's nothing to group, and the member node's own
+ * category color already conveys everything the subgraph's *Region
+ * classDef would have. This strips any subgraph containing exactly one
+ * member node (and the dangling `class <subgraphId> ...Region` line that
+ * targets it, which would otherwise reference an id that no longer
+ * exists once the subgraph wrapper is gone), leaving the member node
+ * exactly where it was, at the top level. Deliberately conservative:
+ * only touches a subgraph whose ENTIRE body is exactly one bare node
+ * declaration line — a subgraph with a single node plus any edge, note,
+ * or nested subgraph is left alone, since that's no longer the "grouping
+ * added nothing" case this targets.
+ */
+export function collapseSingleNodeSubgraphs(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+  const toRemoveLineIdx = new Set<number>();
+  const collapsedSubgraphIds = new Set<string>();
+
+  // Single pass, tracking the innermost open subgraph's start line and the
+  // node-declaration lines seen directly inside it (nested subgraphs reset
+  // tracking for their own scope so a nested single-node subgraph can still
+  // be collapsed independently, but a subgraph containing a nested
+  // subgraph itself is never collapsed -- its body isn't "one node").
+  interface Frame {
+    startIdx: number;
+    id: string;
+    memberLines: number[];
+    hasNonNodeContent: boolean;
+  }
+  const stack: Frame[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const openMatch = SUBGRAPH_OPEN_RE.exec(line);
+    if (openMatch) {
+      stack.push({ startIdx: i, id: openMatch[1]!, memberLines: [], hasNonNodeContent: false });
+      continue;
+    }
+    if (SUBGRAPH_END_RE.test(line) && stack.length > 0) {
+      const frame = stack.pop()!;
+      if (!frame.hasNonNodeContent && frame.memberLines.length === 1) {
+        toRemoveLineIdx.add(frame.startIdx);
+        toRemoveLineIdx.add(i);
+        collapsedSubgraphIds.add(frame.id);
+      } else if (stack.length > 0) {
+        // A collapsed-ineligible subgraph nested inside another still
+        // counts as "non-node content" for its parent -- the parent's
+        // body is a subgraph, not a single bare node, so the parent must
+        // not collapse either.
+        stack[stack.length - 1]!.hasNonNodeContent = true;
+      }
+      continue;
+    }
+    if (stack.length === 0) continue; // outside any subgraph -- nothing to track
+
+    const top = stack[stack.length - 1]!;
+    if (NODE_DECL_RE.test(line.trim())) {
+      top.memberLines.push(i);
+    } else if (line.trim() !== "") {
+      top.hasNonNodeContent = true; // an edge, note, or anything else inside this subgraph
+    }
+  }
+
+  if (collapsedSubgraphIds.size === 0) {
+    return source; // nothing to collapse — don't touch the source at all
+  }
+
+  const kept = lines.filter((line, idx) => {
+    if (toRemoveLineIdx.has(idx)) return false;
+    // Drop the now-dangling `class <collapsedSubgraphId> ...Region` line,
+    // if the model emitted one for this subgraph — the id it refers to no
+    // longer exists as anything (not a node, not a subgraph) once the
+    // wrapper is gone.
+    const classMatch = CLASS_LINE_RE.exec(line);
+    if (classMatch) {
+      const ids = classMatch[2]!.split(",").map((s) => s.trim());
+      if (ids.length === 1 && collapsedSubgraphIds.has(ids[0]!) && /Region$/.test(classMatch[3]!)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return kept.join("\n");
+}
+
+const SEQUENCE_BLOCK_OPEN_RE = /^\s*(alt|opt|loop|par|critical|rect|break)\b/;
+const SEQUENCE_BLOCK_END_RE = /^\s*end\s*$/;
+const SEQUENCE_MESSAGE_RE = /^\s*[\w]+\s*-{1,2}[x>)]{1,2}\s*[\w]+\s*:/;
+const SEQUENCE_PARTICIPANT_RE = /^\s*(?:actor|participant)\s+(\w+)/;
+const SEQUENCE_NOTE_RE = /^\s*Note\s+(?:over|left of|right of)\b/i;
+
+/**
+ * Round-11 finding, from a fresh adversarial review: when an ENTIRE
+ * sequenceDiagram is new (the whole flow is one PR-introduced exchange,
+ * not an existing flow gaining one step), the SYSTEM_PROMPT's own
+ * diff-awareness instruction (llm.ts) says to wrap the whole thing in
+ * `rect rgba(88, 166, 255, 0.3)`. That's correct, but a reviewer scanning
+ * quickly has nothing to CONTRAST it against — the highlight covers every
+ * message, so it doesn't visually read as "a signal" the way it does when
+ * it sits next to un-highlighted pre-existing calls. The reviewer that
+ * caught this scored the diagram down for looking diff-unaware even
+ * though it technically was. This deterministically adds an explicit
+ * `Note over <first>,<last>: New flow added by this PR` as the first line
+ * inside a rect block that spans the diagram's ENTIRE set of message
+ * exchanges (no message arrow appears outside it) and doesn't already
+ * open with its own Note — unambiguous even to someone not looking
+ * closely at background tint, and left alone for the common case where
+ * only PART of a sequence is new (the contrast against un-highlighted
+ * pre-existing calls already does this job there).
+ */
+export function annotateFullyNewSequence(source: string): string {
+  const isSequence = /^sequenceDiagram\b/i.test(source.trim());
+  if (!isSequence) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+
+  // Find the first `rect rgba(88, 166, 255, ...)` block and its matching
+  // `end`, respecting nesting of alt/opt/loop/par/critical/rect/break.
+  let rectOpenIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*rect\s+rgba\(\s*88\s*,\s*166\s*,\s*255\s*,/.test(lines[i]!)) {
+      rectOpenIdx = i;
+      break;
+    }
+  }
+  if (rectOpenIdx === -1) {
+    return source; // no diff-highlight rect at all -- nothing to annotate
+  }
+
+  let depth = 1;
+  let rectEndIdx = -1;
+  for (let i = rectOpenIdx + 1; i < lines.length; i++) {
+    if (SEQUENCE_BLOCK_OPEN_RE.test(lines[i]!)) depth++;
+    else if (SEQUENCE_BLOCK_END_RE.test(lines[i]!)) {
+      depth--;
+      if (depth === 0) {
+        rectEndIdx = i;
+        break;
+      }
+    }
+  }
+  if (rectEndIdx === -1) {
+    return source; // unbalanced rect/end -- don't guess, leave it alone
+  }
+
+  // Does every message exchange in the whole diagram fall inside this one
+  // rect block? If any message sits outside it, this is a PARTIAL
+  // highlight (some pre-existing flow left un-highlighted for contrast),
+  // which already does the "this is new" signaling job on its own.
+  for (let i = 0; i < lines.length; i++) {
+    if (i > rectOpenIdx && i < rectEndIdx) continue;
+    if (SEQUENCE_MESSAGE_RE.test(lines[i]!)) {
+      return source; // a message exists outside the rect -- partial highlight, leave alone
+    }
+  }
+
+  // Already has its own Note as the first substantive line inside the
+  // rect? Respect it rather than adding a second, redundant one.
+  const firstInnerLine = lines.slice(rectOpenIdx + 1, rectEndIdx).find((l) => l.trim() !== "");
+  if (firstInnerLine && SEQUENCE_NOTE_RE.test(firstInnerLine)) {
+    return source;
+  }
+
+  const participants: string[] = [];
+  for (const line of lines) {
+    const m = SEQUENCE_PARTICIPANT_RE.exec(line);
+    if (m && !participants.includes(m[1]!)) participants.push(m[1]!);
+  }
+  if (participants.length === 0) {
+    return source; // no declared participants/actors to anchor a Note over -- can't safely add one
+  }
+
+  const span =
+    participants.length === 1 ? participants[0]! : `${participants[0]!},${participants[participants.length - 1]!}`;
+  const indent = /^(\s*)/.exec(lines[rectOpenIdx + 1] ?? "    ")?.[1] ?? "    ";
+  const noteLine = `${indent}Note over ${span}: New flow added by this PR`;
+
+  const out = [...lines];
+  out.splice(rectOpenIdx + 1, 0, noteLine);
+  return out.join("\n");
+}
+
+/**
+ * Round-12 finding, from a fresh adversarial review: a real generated
+ * diagram (10-file scale test, live API call) left `EventBus`,
+ * `PaymentGateway`, and `NotificationService` as bare top-level nodes with
+ * no subgraph at all, each reached by a long connector snaking across the
+ * canvas. The SYSTEM_PROMPT (llm.ts) explicitly permits leaving a lone
+ * external dependency ungrouped -- but the model over-applied that
+ * permission to three nodes at once, and the reviewer's complaint was
+ * concrete and real: a reviewer's eye has to hunt for what an orphaned
+ * node belongs to and trace a line across the canvas to find out, which is
+ * exactly the "reconstruct the graph yourself" cost this product exists
+ * to remove. Prompt-only instructions have proven unreliable throughout
+ * this project's history (see CLAUDE.md items 19-20), so this is a
+ * deterministic backstop, same pattern as collapseSingleNodeSubgraphs and
+ * assignMissingCategories: 2+ top-level nodes (not already inside ANY
+ * subgraph) classed external/externalContext get wrapped in a
+ * `subgraph External["External Services"] ... end`.
+ *
+ * Deliberately conservative: only wraps when every qualifying node's
+ * declaration line is CONTIGUOUS (allowing blank lines between them) --
+ * if an edge or an unrelated node's declaration sits between two external
+ * nodes, this leaves the source untouched rather than guessing how to
+ * safely relocate lines out of order. A single ungrouped external node is
+ * left alone too (matching the prompt's own explicit permission, and
+ * because wrapping just one would immediately be undone by
+ * collapseSingleNodeSubgraphs anyway).
+ */
+export function groupUngroupedExternalNodes(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+
+  // Track subgraph nesting depth per line so we only ever consider
+  // genuinely top-level (depth 0) node declarations.
+  let depth = 0;
+  const lineDepth: number[] = new Array(lines.length);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (SUBGRAPH_OPEN_RE.test(line)) {
+      lineDepth[i] = depth;
+      depth++;
+      continue;
+    }
+    if (SUBGRAPH_END_RE.test(line) && depth > 0) {
+      depth--;
+      lineDepth[i] = depth;
+      continue;
+    }
+    lineDepth[i] = depth;
+  }
+
+  // Build id -> base category from every `class` line in the source
+  // (mirrors reconcileDiffClassification's own parsing of the same
+  // syntax), so this only ever acts on nodes the model itself already
+  // classed external/externalContext -- never a guess of our own.
+  const categoryOf = new Map<string, string>();
+  for (const line of lines) {
+    const m = CLASS_LINE_RE.exec(line);
+    if (!m) continue;
+    const base = baseCategoryOf(m[3]!);
+    if (!base) continue;
+    for (const id of m[2]!.split(",").map((s) => s.trim())) {
+      if (id) categoryOf.set(id, base);
+    }
+  }
+
+  // Find every top-level bare node declaration (`Id["label"]`) whose
+  // class is external, in source order.
+  const qualifying: { idx: number; id: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lineDepth[i] !== 0) continue;
+    const nodeMatch = NODE_DECL_RE.exec(lines[i]!.trim());
+    if (nodeMatch && categoryOf.get(nodeMatch[1]!) === "external") {
+      qualifying.push({ idx: i, id: nodeMatch[1]! });
+    }
+  }
+
+  if (qualifying.length < 2) {
+    return source; // nothing to group, or only one -- leave the prompt's own rule alone
+  }
+
+  // Verify contiguity: every top-level, non-blank line strictly between
+  // the first and last qualifying declaration must itself be one of the
+  // qualifying declarations -- if an edge or an unrelated node's own
+  // declaration sits in between, this isn't safely relocatable, so leave
+  // the source untouched rather than guess.
+  const qualifyingIdxSet = new Set(qualifying.map((q) => q.idx));
+  const firstIdx = qualifying[0]!.idx;
+  const lastIdx = qualifying[qualifying.length - 1]!.idx;
+  let contiguous = true;
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    if (lineDepth[i] !== 0) {
+      contiguous = false;
+      break;
+    }
+    if (lines[i]!.trim() === "" || qualifyingIdxSet.has(i)) continue;
+    contiguous = false;
+    break;
+  }
+  if (!contiguous) {
+    return source; // not safely relocatable -- leave it alone rather than guess
+  }
+
+  const indent = /^(\s*)/.exec(lines[firstIdx] ?? "")?.[1] ?? "  ";
+  const out = [...lines];
+  // Insert `end` right after the last qualifying line, then the subgraph
+  // opener right before the first -- inserting from the back first keeps
+  // firstIdx/lastIdx valid for the second splice.
+  out.splice(lastIdx + 1, 0, `${indent}end`, `${indent}class External externalRegion`);
+  out.splice(firstIdx, 0, `${indent}subgraph External["External Services"]`);
+
+  return out.join("\n");
+}

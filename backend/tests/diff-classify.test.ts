@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { computeDiffTouchState, reconcileDiffClassification, stripSelfLoopEdges, assignMissingCategories, type DiffPatchFile } from "../lib/diff-classify.js";
+import {
+  computeDiffTouchState,
+  reconcileDiffClassification,
+  stripSelfLoopEdges,
+  assignMissingCategories,
+  collapseSingleNodeSubgraphs,
+  annotateFullyNewSequence,
+  groupUngroupedExternalNodes,
+  type DiffPatchFile,
+} from "../lib/diff-classify.js";
 
 describe("computeDiffTouchState", () => {
   it("collects tokens from added (+) lines as changed", () => {
@@ -448,5 +457,304 @@ describe("assignMissingCategories", () => {
   it("is a no-op for sequenceDiagram, where class doesn't apply", () => {
     const source = "sequenceDiagram\n  A->>B: hi";
     expect(assignMissingCategories(source)).toBe(source);
+  });
+});
+
+// Round-11 finding: a fresh adversarial review of the real 10-file scale
+// test flagged a subgraph wrapping a single node
+// (subgraph Data["Database"] ... Tables["orders + refunds tables"] ... end)
+// as unnecessary visual clutter -- a colored border around a node that
+// already has its own colored border.
+describe("collapseSingleNodeSubgraphs", () => {
+  it("unwraps a subgraph whose entire body is exactly one node declaration", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Data["Database"]',
+      '    Tables["orders + refunds tables"]',
+      '  end',
+      '  class Tables datastore',
+      '  class Data datastoreRegion',
+      '  A --> Tables',
+    ].join("\n");
+    const result = collapseSingleNodeSubgraphs(source);
+    expect(result).toContain('Tables["orders + refunds tables"]');
+    expect(result).not.toContain("subgraph Data");
+    expect(result).not.toContain("end");
+    expect(result).not.toContain("datastoreRegion");
+    expect(result).toContain("class Tables datastore"); // the node's own category line is untouched
+    expect(result).toContain("A --> Tables");
+  });
+
+  it("leaves a subgraph with two or more member nodes alone", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Logic["Business Logic"]',
+      '    A["a.ts"]',
+      '    B["b.ts"]',
+      '  end',
+      '  class A,B logic',
+      '  class Logic logicRegion',
+    ].join("\n");
+    expect(collapseSingleNodeSubgraphs(source)).toBe(source);
+  });
+
+  it("leaves a single-node subgraph alone if it also contains an edge (not purely a bare node)", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Data["Database"]',
+      '    Tables["orders table"]',
+      '    Tables -->|self-check| Tables',
+      '  end',
+      '  class Tables datastore',
+      '  class Data datastoreRegion',
+    ].join("\n");
+    expect(collapseSingleNodeSubgraphs(source)).toBe(source);
+  });
+
+  it("collapses more than one qualifying subgraph in the same diagram", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Data["Database"]',
+      '    Tables["orders table"]',
+      '  end',
+      '  subgraph Ext["External"]',
+      '    Gw["PaymentGateway"]',
+      '  end',
+      '  class Tables datastore',
+      '  class Data datastoreRegion',
+      '  class Gw external',
+      '  class Ext externalRegion',
+    ].join("\n");
+    const result = collapseSingleNodeSubgraphs(source);
+    expect(result).not.toContain("subgraph Data");
+    expect(result).not.toContain("subgraph Ext");
+    expect(result).toContain('Tables["orders table"]');
+    expect(result).toContain('Gw["PaymentGateway"]');
+  });
+
+  it("does not collapse a subgraph containing a nested subgraph", () => {
+    const source = [
+      'flowchart TD',
+      '  subgraph Outer["Outer"]',
+      '    subgraph Inner["Inner"]',
+      '      A["a.ts"]',
+      '    end',
+      '  end',
+      '  class A logic',
+      '  class Inner logicRegion',
+    ].join("\n");
+    // The inner single-node subgraph collapses; the outer one, whose body
+    // is now "a subgraph" rather than a single bare node, must not.
+    const result = collapseSingleNodeSubgraphs(source);
+    expect(result).toContain("subgraph Outer");
+    expect(result).not.toContain("subgraph Inner");
+    expect(result).toContain('A["a.ts"]');
+  });
+
+  it("returns the source unchanged when there is nothing to collapse", () => {
+    const source = ['flowchart TD', '  A["a.ts"] --> B["b.ts"]'].join("\n");
+    expect(collapseSingleNodeSubgraphs(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = "sequenceDiagram\n  A->>B: hi";
+    expect(collapseSingleNodeSubgraphs(source)).toBe(source);
+  });
+});
+
+describe("annotateFullyNewSequence", () => {
+  it("injects a Note as the first line inside a rect that spans every message exchange", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Client",
+      "  participant API",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  Client->>API: newEndpoint()",
+      "  API-->>Client: 200 OK",
+      "  end",
+    ].join("\n");
+    const result = annotateFullyNewSequence(source);
+    const lines = result.split("\n");
+    const rectIdx = lines.findIndex((l) => l.includes("rect rgba(88, 166, 255"));
+    expect(lines[rectIdx + 1]).toMatch(/Note over Client,API: New flow added by this PR/);
+  });
+
+  it("leaves a partial highlight alone (a message exists outside the rect)", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Client",
+      "  participant API",
+      "  Client->>API: existingCall()",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  Client->>API: newEndpoint()",
+      "  end",
+    ].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("does not double-annotate a rect that already opens with its own Note", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Client",
+      "  participant API",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  Note over Client,API: Already annotated",
+      "  Client->>API: newEndpoint()",
+      "  end",
+    ].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("is a no-op when there is no diff-highlight rect at all", () => {
+    const source = ["sequenceDiagram", "  participant Client", "  Client->>API: hi"].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("leaves an unbalanced rect/end alone rather than guessing", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Client",
+      "  participant API",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  Client->>API: newEndpoint()",
+    ].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("uses the single participant twice when only one is declared", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Worker",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  Worker->>Worker: selfCheck()",
+      "  end",
+    ].join("\n");
+    const result = annotateFullyNewSequence(source);
+    expect(result).toContain("Note over Worker: New flow added by this PR");
+  });
+
+  it("is a no-op when no participants/actors are declared at all", () => {
+    const source = ["sequenceDiagram", "  rect rgba(88, 166, 255, 0.3)", "  Client->>API: hi", "  end"].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("is a no-op for flowchart", () => {
+    const source = ['flowchart TD', '  A["a.ts"] --> B["b.ts"]'].join("\n");
+    expect(annotateFullyNewSequence(source)).toBe(source);
+  });
+
+  it("respects nested alt/opt/loop blocks when finding the matching end for the rect", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant Client",
+      "  participant API",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  alt success",
+      "  Client->>API: newEndpoint()",
+      "  else failure",
+      "  API-->>Client: error",
+      "  end",
+      "  end",
+    ].join("\n");
+    const result = annotateFullyNewSequence(source);
+    const lines = result.split("\n");
+    const rectIdx = lines.findIndex((l) => l.includes("rect rgba(88, 166, 255"));
+    expect(lines[rectIdx + 1]).toMatch(/Note over Client,API: New flow added by this PR/);
+  });
+
+  it("recognizes actor declarations, not just participant", () => {
+    const source = [
+      "sequenceDiagram",
+      "  actor User",
+      "  participant API",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  User->>API: newEndpoint()",
+      "  end",
+    ].join("\n");
+    const result = annotateFullyNewSequence(source);
+    expect(result).toContain("Note over User,API: New flow added by this PR");
+  });
+});
+
+describe("groupUngroupedExternalNodes", () => {
+  it("wraps 2+ contiguous ungrouped external nodes into their own subgraph (the real captured bug)", () => {
+    // The exact real shape from the live-scale stress test that a fresh
+    // adversarial review flagged: EventBus/PaymentGateway/
+    // NotificationService left as bare top-level nodes.
+    const source = [
+      "flowchart TD",
+      '  subgraph Logic["Service Layer"]',
+      '    OrderService["orderService.ts"]',
+      "  end",
+      "  class OrderService logic",
+      "",
+      '  EventBus["EventBus"]',
+      '  PaymentGateway["PaymentGateway"]',
+      '  NotificationService["NotificationService"]',
+      "  class EventBus,PaymentGateway,NotificationService externalContext",
+      "",
+      "  OrderService --> EventBus",
+    ].join("\n");
+    const result = groupUngroupedExternalNodes(source);
+    expect(result).toContain('subgraph External["External Services"]');
+    expect(result).toContain("class External externalRegion");
+    expect(result).toContain('EventBus["EventBus"]');
+    expect(result).toContain('PaymentGateway["PaymentGateway"]');
+    expect(result).toContain('NotificationService["NotificationService"]');
+    expect(result).toContain("OrderService --> EventBus"); // edges untouched
+    // The subgraph must actually wrap all three (open before, end after).
+    const lines = result.split("\n");
+    const openIdx = lines.findIndex((l) => l.includes('subgraph External["External Services"]'));
+    const eventBusIdx = lines.findIndex((l) => l.includes('EventBus["EventBus"]'));
+    const notifIdx = lines.findIndex((l) => l.includes('NotificationService["NotificationService"]'));
+    const endIdx = lines.findIndex((l, i) => i > notifIdx && l.trim() === "end");
+    expect(openIdx).toBeLessThan(eventBusIdx);
+    expect(notifIdx).toBeLessThan(endIdx);
+  });
+
+  it("leaves a single ungrouped external node alone", () => {
+    const source = [
+      "flowchart TD",
+      '  A["a.ts"]',
+      '  PaymentGateway["PaymentGateway"]',
+      "  class A logic",
+      "  class PaymentGateway externalContext",
+    ].join("\n");
+    expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+
+  it("leaves ungrouped external nodes alone when they aren't contiguous", () => {
+    const source = [
+      "flowchart TD",
+      '  EventBus["EventBus"]',
+      '  A["a.ts"]',
+      '  PaymentGateway["PaymentGateway"]',
+      "  class EventBus,PaymentGateway externalContext",
+      "  class A logic",
+    ].join("\n");
+    expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+
+  it("does not re-wrap external nodes that are already inside a subgraph", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Ext["External Services"]',
+      '    EventBus["EventBus"]',
+      '    PaymentGateway["PaymentGateway"]',
+      "  end",
+      "  class EventBus,PaymentGateway externalContext",
+      "  class Ext externalRegion",
+    ].join("\n");
+    expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+
+  it("returns the source unchanged when there are no external nodes at all", () => {
+    const source = ['flowchart TD', '  A["a.ts"] --> B["b.ts"]', "  class A,B logic"].join("\n");
+    expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = "sequenceDiagram\n  A->>B: hi";
+    expect(groupUngroupedExternalNodes(source)).toBe(source);
   });
 });

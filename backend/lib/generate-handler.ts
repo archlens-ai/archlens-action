@@ -1,6 +1,13 @@
 import { buildPrompt, buildRepairPrompt, type DiffFile, type DiagramTypeHint, type LlmProvider } from "./llm.js";
 import { validateMermaidSyntax } from "./mermaid.js";
-import { reconcileDiffClassification, stripSelfLoopEdges, assignMissingCategories } from "./diff-classify.js";
+import {
+  reconcileDiffClassification,
+  stripSelfLoopEdges,
+  assignMissingCategories,
+  collapseSingleNodeSubgraphs,
+  annotateFullyNewSequence,
+  groupUngroupedExternalNodes,
+} from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
 
@@ -128,6 +135,16 @@ export async function handleGenerateRequest(
     // runs in production, so this strips any that slip through.
     mermaidSource = stripSelfLoopEdges(mermaidSource);
 
+    // Deterministic backstop, round-11 finding: a fresh adversarial review
+    // of the tiered-model output flagged a subgraph wrapping a SINGLE node
+    // (`subgraph Data["Database"] ... Tables["orders + refunds tables"] ...
+    // end`) as unnecessary visual clutter — a colored border around a node
+    // that already has its own colored border, since grouping only one
+    // thing conveys nothing a subgraph exists to show. Strips any subgraph
+    // whose entire body is exactly one bare node, leaving the node at the
+    // top level.
+    mermaidSource = collapseSingleNodeSubgraphs(mermaidSource);
+
     // Deterministic backstop, same reasoning again: a real generated
     // diagram (live-scale stress test) declared and wired up
     // `RefundWorker` but never gave it a `class` line at all — mermaid
@@ -136,6 +153,28 @@ export async function handleGenerateRequest(
     // `endpoint`, so a background worker rendered as if it were a real API
     // route. Catches any node left with no category whatsoever.
     mermaidSource = assignMissingCategories(mermaidSource);
+
+    // Deterministic backstop, round-12 finding: a fresh adversarial review
+    // of a real generated diagram (live-scale stress test) flagged
+    // `EventBus`/`PaymentGateway`/`NotificationService` as bare top-level
+    // nodes with no subgraph at all, each reached by a long connector
+    // snaking across the canvas — exactly the "reconstruct the graph
+    // yourself" cost this product exists to remove. The SYSTEM_PROMPT
+    // permits leaving a single external dependency ungrouped, but the
+    // model over-applied that permission to three nodes at once. Wraps
+    // 2+ contiguous, still-ungrouped external/externalContext nodes into
+    // their own "External Services" subgraph; conservatively a no-op if
+    // they aren't contiguous in the source (see its own docstring).
+    mermaidSource = groupUngroupedExternalNodes(mermaidSource);
+
+    // Deterministic backstop, round-11 finding (sequence diagram side of
+    // the same review that flagged the single-node subgraph above): when
+    // the ENTIRE sequence is new, the diff-highlight `rect` has nothing
+    // un-highlighted to contrast against, so a reviewer scanning quickly
+    // can miss that it's a diff-awareness signal at all. A no-op for
+    // flowcharts and for any sequence diagram that isn't fully new (see
+    // annotateFullyNewSequence's own docstring for the exact conditions).
+    mermaidSource = annotateFullyNewSequence(mermaidSource);
 
     const { svg } = await deps.render(mermaidSource);
     const svgUrl = await deps.storeSvg(hash, svg);

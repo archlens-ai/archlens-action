@@ -897,11 +897,30 @@ window.__archlensReady = true;
 // edges into RefundService) rather than merging distinct edges into one —
 // each edge keeps its own id/data-id, so injectFlowRunners()/
 // applyBoldGlowStyling()'s per-edge logic above is unaffected.
-const ELK_FRONTMATTER = "config:\n  layout: elk\n  elk:\n    mergeEdges: true\n    nodePlacementStrategy: NETWORK_SIMPLEX\n";
+function buildElkFrontmatter(look?: "classic" | "handDrawn" | "neo"): string {
+  const lookLine = look && look !== "classic" ? `  look: ${look}\n` : "";
+  return `config:\n  layout: elk\n${lookLine}  elk:\n    mergeEdges: true\n    nodePlacementStrategy: NETWORK_SIMPLEX\n`;
+}
 
 export async function renderMermaidToSvg(
   source: string,
-  opts: { timeoutMs?: number; executablePath?: string } = {}
+  opts: {
+    timeoutMs?: number;
+    executablePath?: string;
+    /**
+     * Spike (2026-09-06), not yet wired into production generation:
+     * mermaid 11.14.0 (already the version this project runs) exposes a
+     * `look` config independent of theme colors -- 'classic' (current
+     * default), 'handDrawn' (rough.js sketchy), 'neo' (a distinct modern
+     * flat-shape renderer) -- confirmed by reading
+     * node_modules/mermaid/dist/config.type.d.ts directly, not assumed
+     * from docs. Left optional/undefined-default so every existing
+     * caller/test is unaffected; see scripts/spike-mermaid-look.ts for
+     * the real side-by-side render this was tested with before any
+     * decision to adopt one for production.
+     */
+    look?: "classic" | "handDrawn" | "neo";
+  } = {}
 ): Promise<RenderResult> {
   const validation = validateMermaidSyntax(source);
   if (!validation.valid) {
@@ -917,7 +936,7 @@ export async function renderMermaidToSvg(
 
   let styledSource = applyArchLensStyling(source);
   if (diagramType === "flowchart") {
-    styledSource = `---\n${ELK_FRONTMATTER}---\n${styledSource}`;
+    styledSource = `---\n${buildElkFrontmatter(opts.look)}---\n${styledSource}`;
   }
 
   const puppeteer = (await import("puppeteer-core")).default;
