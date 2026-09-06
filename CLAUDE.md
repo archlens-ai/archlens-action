@@ -1301,3 +1301,99 @@ honest read is that continuing to grind the same review loop unchanged is
 unlikely to close the remaining gap by itself, and item 1 above (real
 GitHub PR) is the highest-value next step before deciding what to build
 next.
+
+## 23. First real GitHub PR test (2026-09-06) — the animated glow does NOT survive GitHub's `<img>` embed; everything else does
+
+Anurag's instruction: fork a complex real repo, create two branches, make a
+substantial real change on one, and open a real PR against the other — a
+concrete way to close the single biggest disclosed-but-untested unknown
+flagged in item 22 (whether GitHub's actual rendering pipeline preserves
+the product's signature animated-glow effect).
+
+**What was built, for real, not simulated:** forked
+`tiangolo/full-stack-fastapi-template` to a real GitHub account
+(`KITHMEDAI`, via a live OAuth device-flow login completed with Anurag in
+the loop — this sandbox had no GitHub credentials at all going in, a real
+blocker worth remembering for next time). Created `archlens/base-before-
+notifications` and `archlens/add-notifications-feature`, both off the
+fork's real `master`. On the feature branch, added a genuinely new,
+realistic 6-file feature (a `Notification` model + Alembic migration, a
+`services/notifications.py` module, a `notifications` router, and a hook
+in `items.py` that fires a notification on item creation) — not a copy of
+an old test fixture, a fresh multi-file change written directly into the
+real cloned repo. Opened **real PR #1**
+(github.com/KITHMEDAI/full-stack-fastapi-template/pull/1), base branch to
+base branch, never touching upstream tiangolo's repo at all.
+
+Ran ArchLens's own real pipeline (`scripts/dry-run-real-repo.ts`, real
+Anthropic API call, real ELK render) against the real diff between the two
+branches — clean generation, correctly classified endpoint/logic/datastore
+categories, correct FK-derived edge to the pre-existing `user` table
+correctly dashed as context. Committed the generated SVG into the repo
+(`.archlens/pr-1-diagram.svg` on the feature branch) and posted a real
+comment on the real PR, in the exact production comment format
+(`buildCommentBody`), with the image referenced via
+`raw.githubusercontent.com` (not a local/synthetic URL).
+
+**Verified with a real browser against the real posted comment, not
+assumed:** the dark theme, node colors by category, subgraph boxes, edge
+labels, and the glow filter (`feGaussianBlur`) all render correctly and
+exactly as designed on the actual GitHub PR page — the first time in this
+project's entire history that's been confirmed against a real PR rather
+than a local Puppeteer screenshot. That closes the other half of item 8's
+long-standing open unknown: whatever GitHub's image pipeline does with an
+externally-hosted SVG embedded via `<img>`, it does not break the static
+visual design.
+
+**But the animated part does not survive.** Compared the same exact SVG
+two ways: loaded directly as a document (`raw.githubusercontent.com/.../
+pr-1-diagram.svg` in its own tab) versus embedded via `<img src="...">` in
+the real posted PR comment. On the standalone load, the animated runner
+marker (`<animateMotion>`) visibly moved between two zoomed screenshots
+taken ~2-3 seconds apart on the same edge. On the real PR page, the exact
+same edge region showed no marker at all, in either of two checks several
+seconds apart — a static single frame, not a frozen-mid-path artifact
+(round-12's reviewer guess) but a complete absence of the runner. This is
+consistent with a real, known constraint: browsers commonly render an
+`<img>`-referenced SVG as a non-animating single frame, distinct from how
+the same SVG behaves loaded as a standalone document. Confirmed here
+empirically against GitHub's actual rendering, not assumed from general
+web platform knowledge alone.
+
+**What this means, plainly**: the animated glowing arrow — the single
+feature Anurag was most excited about ("if you can add dinamic glowing
+arrow... that would awesome," item 10) — does not actually animate in the
+product's real, primary delivery surface (a GitHub PR comment). It has
+been rendering correctly this whole time in every local screenshot and
+spike test because those all loaded the SVG as its own document
+(Puppeteer navigating directly to the file), never through an `<img>` tag
+the way GitHub actually serves it. This was invisible until this test
+specifically because every prior verification method matched the bug.
+
+**Not yet attempted, a real next step**: whether a CSS-based motion
+technique (e.g. `offset-path`/`offset-distance` with a `@keyframes` rule,
+animating a marker element rather than using SMIL's `<animateMotion>`)
+survives the `<img>` embed where SMIL does not. This is a plausible fix
+based on how browsers generally scope animation restrictions for
+image-mode SVG, but it is unverified — it needs the same kind of real,
+on-a-real-PR test as this one before being trusted, not assumed to work
+from first principles. If it doesn't pan out either, the honest fallback
+is to drop the motion and keep the (confirmed-working) glow/bold static
+styling as the differentiator, or explore whether the diagram could be
+delivered as an animated raster (APNG/WebP), which trades vector
+crispness for a format browsers do animate inside `<img>`.
+
+**Real, useful side effect**: PR #1 is also a good end-to-end fixture
+going forward — it is small, real, on a real fork, and already has a real
+ArchLens-generated comment on it, so re-running this exact test after any
+future animation fix is cheap (no need to fork/branch again, just
+regenerate and re-post).
+
+**Status toward the score >= 9 gate**: this item didn't run a fresh
+adversarial review (it was scoped to closing the real-GitHub-rendering
+unknown from item 22's recommendation #1) but it materially changes what
+that next review should weigh: the static visual design is now confirmed
+real-world-correct, while the animation — a headline feature — is
+confirmed NOT to work in production as currently implemented. That's a
+more important thing to fix than another round of cosmetic polish before
+the next review.
