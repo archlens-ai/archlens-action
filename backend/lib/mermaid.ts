@@ -685,6 +685,79 @@ export function injectFlowRunners(svg: string): string {
   return svg.replace(/<\/svg>\s*$/, `${runners.join("")}</svg>`);
 }
 
+// CSS-keyframes class/animation names for injectFlowRunnersCss() below —
+// named constants so the <style> block and each runner's own class="..."
+// can't drift apart.
+const CSS_FLOW_RUNNER_CLASS = "archlens-flow-runner";
+const CSS_FLOW_ANIM_NAME = "archlens-flow";
+
+/**
+ * CSS alternative to injectFlowRunners()'s SMIL-based motion, added
+ * 2026-09-06 after the first real GitHub PR test (CLAUDE.md item 23)
+ * confirmed the SMIL `<animateMotion>` runner does not play at all when
+ * the SVG is embedded via `<img src="...">` — GitHub's actual PR-comment
+ * mechanism — even though the identical file animates correctly when
+ * loaded as a standalone document. Every prior verification of the
+ * animated-glow feature (screenshot-svg.mjs, capture-flow-gif.mjs, every
+ * spike and dry-run script) loaded the SVG as a top-level document, so all
+ * of them missed this; only a real `<img>` embed on a real GitHub page
+ * caught it.
+ *
+ * Browsers commonly disable SMIL's own animation timeline for an SVG used
+ * in "image context" (`<img>`, CSS `background-image`, etc.) while still
+ * running CSS animations/transitions declared on that same SVG's elements
+ * — this is the generalization item 23 flagged as the plausible next fix,
+ * not yet proven for ArchLens specifically. This function reproduces the
+ * identical visual effect (a small glowing arrowhead traveling along each
+ * edge's own path, oriented along its tangent) using CSS `offset-path` +
+ * `offset-distance` driven by a `@keyframes` rule instead of
+ * `<animateMotion>`/`<mpath>`, reading the exact same `d` geometry
+ * straight off the rendered edge — no cooperation from Mermaid syntax or
+ * the model needed, same as the function it's meant to replace.
+ *
+ * NOT YET WIRED into renderMermaidToSvg()'s default path — swapped in via
+ * `opts.flowAnimation === "css"` specifically so this can be validated
+ * with the same kind of real-PR round-trip test as item 23 before
+ * replacing the SMIL version outright. See CLAUDE.md for the outcome of
+ * that test once it's run.
+ */
+export function injectFlowRunnersCss(svg: string): string {
+  const edgeTags = svg.match(EDGE_PATH_TAG_RE) ?? [];
+  if (edgeTags.length === 0) {
+    return svg;
+  }
+
+  const runners = edgeTags
+    .map((tag) => {
+      const d = extractAttr(tag, "d");
+      if (!d) return null;
+      const classAttr = extractAttr(tag, "class") ?? "";
+      if (classAttr.split(/\s+/).includes(REMOVED_EDGE_CLASS)) return null;
+      // The `d` attribute is plain path-command syntax (letters, numbers,
+      // commas, whitespace) — never contains a quote character — so it's
+      // safe to drop straight into a single-quoted CSS path() function
+      // inside this double-quoted `style` attribute with no escaping.
+      return (
+        `<path d="M-5,-4 L6,0 L-5,4 L-2,0 Z" fill="#79c0ff" stroke="#0d1117" stroke-width="0.75"` +
+        ` filter="url(#${GLOW_FILTER_ID})" class="${CSS_FLOW_RUNNER_CLASS}"` +
+        ` style="offset-path:path('${d}');offset-rotate:auto;"/>`
+      );
+    })
+    .filter((r): r is string => r !== null);
+
+  if (runners.length === 0) {
+    return svg;
+  }
+
+  const styleBlock =
+    `<style>` +
+    `@keyframes ${CSS_FLOW_ANIM_NAME}{from{offset-distance:0%;}to{offset-distance:100%;}}` +
+    `.${CSS_FLOW_RUNNER_CLASS}{offset-rotate:auto;animation:${CSS_FLOW_ANIM_NAME} 2.8s linear infinite;}` +
+    `</style>`;
+
+  return svg.replace(/<\/svg>\s*$/, `${styleBlock}${runners.join("")}</svg>`);
+}
+
 function escapeXml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -920,6 +993,16 @@ export async function renderMermaidToSvg(
      * decision to adopt one for production.
      */
     look?: "classic" | "handDrawn" | "neo";
+    /**
+     * Which flow-runner implementation to use for the animated-glow
+     * arrowhead (see injectFlowRunners() vs injectFlowRunnersCss() above).
+     * Defaults to "smil" (the existing, production behavior, unchanged) —
+     * "css" is an unverified candidate fix for the real-GitHub-PR finding
+     * in CLAUDE.md item 23 (SMIL doesn't play in a real `<img>` embed) and
+     * should only be selected once/while validating that fix, not made
+     * the default until a real-PR test confirms it actually works.
+     */
+    flowAnimation?: "smil" | "css";
   } = {}
 ): Promise<RenderResult> {
   const validation = validateMermaidSyntax(source);
@@ -1008,7 +1091,13 @@ export async function renderMermaidToSvg(
       : withBackground.replace(/^<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
 
     const styled = applyBoldGlowStyling(withXlinkNs);
-    const withRunners = diagramType === "flowchart" ? injectFlowRunners(styled) : styled;
+    const flowAnimation = opts.flowAnimation ?? "smil";
+    const withRunners =
+      diagramType === "flowchart"
+        ? flowAnimation === "css"
+          ? injectFlowRunnersCss(styled)
+          : injectFlowRunners(styled)
+        : styled;
     return { svg: appendLegend(withRunners, diagramType) };
   } finally {
     if (browser) await browser.close();

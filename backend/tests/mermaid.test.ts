@@ -4,6 +4,7 @@ import {
   applyArchLensStyling,
   applyBoldGlowStyling,
   injectFlowRunners,
+  injectFlowRunnersCss,
   renderMermaidToSvg,
   validateMermaidSyntax,
 } from "../lib/mermaid.js";
@@ -194,6 +195,75 @@ describe("injectFlowRunners", () => {
     expect(result.match(/<animateMotion/g)?.length).toBe(1);
     expect(result).not.toContain('href="#my-svg-L_A_B_0"');
     expect(result).toContain('href="#my-svg-L_B_C_0"');
+  });
+});
+
+// Added 2026-09-06 (CLAUDE.md item 23/24): a real GitHub PR test found the
+// SMIL-based injectFlowRunners() runner does not play when the SVG is
+// embedded via <img src="...">, GitHub's actual PR-comment mechanism.
+// injectFlowRunnersCss() is the candidate fix -- same visual effect via
+// CSS offset-path/offset-distance + @keyframes instead of
+// <animateMotion>/<mpath>, on the theory (unverified until the next
+// real-PR round-trip) that browsers commonly keep running CSS animations
+// in image context even when they suspend SMIL's own timeline.
+describe("injectFlowRunnersCss", () => {
+  const sampleEdgeSvg =
+    '<svg id="my-svg" viewBox="0 0 100 200">' +
+    '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal edge-pattern-solid flowchart-link" style=""/>' +
+    "</svg>";
+
+  it("attaches a CSS offset-path runner reading the edge's own d geometry", () => {
+    const result = injectFlowRunnersCss(sampleEdgeSvg);
+    expect(result).toContain("offset-path:path('M10,10 L10,90')");
+    expect(result).toContain("archlens-flow-runner");
+  });
+
+  it("declares a @keyframes rule driving offset-distance, and an animation rule referencing it", () => {
+    const result = injectFlowRunnersCss(sampleEdgeSvg);
+    expect(result).toMatch(/@keyframes archlens-flow\{from\{offset-distance:0%;\}to\{offset-distance:100%;\}\}/);
+    expect(result).toMatch(/\.archlens-flow-runner\{[^}]*animation:archlens-flow 2\.8s linear infinite;/);
+  });
+
+  it("orients the runner along the path's own tangent via offset-rotate", () => {
+    expect(injectFlowRunnersCss(sampleEdgeSvg)).toContain("offset-rotate:auto");
+  });
+
+  it("uses no SMIL elements at all", () => {
+    const result = injectFlowRunnersCss(sampleEdgeSvg);
+    expect(result).not.toContain("<animateMotion");
+    expect(result).not.toContain("<mpath");
+  });
+
+  it("adds one runner per edge when there are multiple", () => {
+    const twoEdges =
+      '<svg id="my-svg" viewBox="0 0 100 200">' +
+      '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal flowchart-link"/>' +
+      '<path d="M10,90 L10,170" id="my-svg-L_B_C_0" class="edge-thickness-normal flowchart-link"/>' +
+      "</svg>";
+    const result = injectFlowRunnersCss(twoEdges);
+    expect(result.match(/class="archlens-flow-runner"/g)?.length).toBe(2);
+    expect(result).toContain("offset-path:path('M10,10 L10,90')");
+    expect(result).toContain("offset-path:path('M10,90 L10,170')");
+  });
+
+  it("leaves an SVG with no flowchart-link edges untouched", () => {
+    const noEdges = '<svg id="my-svg" viewBox="0 0 100 200"><rect width="10" height="10"/></svg>';
+    expect(injectFlowRunnersCss(noEdges)).toBe(noEdges);
+  });
+
+  // Same root cause and same fix shape as injectFlowRunners()'s equivalent
+  // test above: an edge touching a `removed` node must not get a "live
+  // traffic" animation either way.
+  it("skips edges already tagged archlens-removed-edge", () => {
+    const mixedEdges =
+      '<svg id="my-svg" viewBox="0 0 100 200">' +
+      '<path d="M10,10 L10,90" id="my-svg-L_A_B_0" class="edge-thickness-normal flowchart-link archlens-removed-edge" data-id="L_A_B_0"/>' +
+      '<path d="M10,90 L10,170" id="my-svg-L_B_C_0" class="edge-thickness-normal flowchart-link" data-id="L_B_C_0"/>' +
+      "</svg>";
+    const result = injectFlowRunnersCss(mixedEdges);
+    expect(result.match(/class="archlens-flow-runner"/g)?.length).toBe(1);
+    expect(result).not.toContain("offset-path:path('M10,10 L10,90')");
+    expect(result).toContain("offset-path:path('M10,90 L10,170')");
   });
 });
 

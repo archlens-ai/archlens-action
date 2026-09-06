@@ -1397,3 +1397,124 @@ real-world-correct, while the animation — a headline feature — is
 confirmed NOT to work in production as currently implemented. That's a
 more important thing to fix than another round of cosmetic polish before
 the next review.
+
+## 24. The CSS `offset-path` candidate fix ALSO fails in a real GitHub `<img>` embed (2026-09-06) — the animation problem is bigger than "SMIL specifically"
+
+Anurag's instruction after item 23: "go with option 1" — try the CSS
+`offset-path`/`offset-distance` alternative flagged as the plausible next
+step, on the theory that browsers commonly keep running CSS animations in
+image context even when they suspend SMIL's own timeline.
+
+**Built and shipped as an opt-in alternative, not a replacement**:
+`injectFlowRunnersCss()` (`backend/lib/mermaid.ts`) reproduces the exact
+same visual effect as `injectFlowRunners()` (a small glowing arrowhead
+traveling along each edge's own path, oriented along its tangent) using
+CSS `offset-path:path('...')` + `offset-distance` driven by a `@keyframes`
+rule instead of SVG's native `<animateMotion>`/`<mpath>` — same edge
+detection, same `removed`-edge skip logic, zero SMIL elements. Selected
+via a new `renderMermaidToSvg(source, { flowAnimation: "css" })` option,
+defaulting to `"smil"` (the existing production behavior stays the
+default until/unless this is proven better) so nothing changes for any
+existing caller. 6 new unit tests (168 -> 174 backend tests), `tsc
+--noEmit` clean, full 175-test suite passing.
+
+**Verified working, twice, before spending a real PR round-trip on it**:
+(1) rendered the exact PR #1 diagram through the new path and confirmed
+the output contains `offset-path`/`@keyframes`/zero `<animateMotion>`;
+(2) loaded it in a real headless-Chromium `<img>`-embed harness (the same
+shape as `screenshot-svg.mjs`) and confirmed two screenshots 2.5s apart
+were byte-different — real motion, locally.
+
+**The real-PR round-trip result is a clean, decisive NO.** Pushed the
+CSS-animation SVG to a new file on the same PR #1 branch
+(`.archlens/pr-1-diagram-css-animation.svg`), posted a temporary A/B test
+comment on the real PR referencing it via `raw.githubusercontent.com`,
+and verified two ways:
+
+- On the raw file loaded as a standalone document: confirmed via direct
+  DOM query (`getComputedStyle(...).animationPlayState === "running"`,
+  `offsetDistance` genuinely changing between two calls, e.g. 79.5% ->
+  15.7%) — the animation is real and does play there, consistent with
+  item 23's SMIL finding on the same kind of standalone load.
+- On the actual GitHub PR page, with the SVG embedded via the real
+  `<img src="https://raw.githubusercontent.com/...">` GitHub renders in
+  the comment: took two zoomed screenshots of the exact runner region
+  (computed from the img's live `getBoundingClientRect()` and the SVG's
+  own viewBox scale factor, not eyeballed) 3 seconds apart and diffed
+  them pixel-by-pixel with PIL/numpy. **Zero differing pixels — the two
+  screenshots were byte-for-byte identical.** No motion at all, not a
+  frozen-mid-path artifact — a fully static frame, the same result item
+  23 found for SMIL.
+
+**Investigated why, didn't stop at "it failed."** `curl`-ing the served
+SVG directly showed GitHub sends
+`content-security-policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+on `raw.githubusercontent.com` responses for SVG content — a real,
+confirmed response header, and a plausible mechanism (the CSP `sandbox`
+directive is known to impose iframe-sandbox-like restrictions on how a
+resource renders). Tested this directly rather than assuming it's the
+cause: replicated the exact header on a local HTTP server and re-ran the
+same headless-Chromium `<img>`-embed check
+(`scripts/check-css-animation-with-github-csp.mjs`). **Result: motion
+still played locally with the CSP header present** — so the `sandbox`
+CSP directive alone is NOT the mechanism suppressing the animation on the
+real page. Ruled out a real candidate rather than leaving it as an
+unverified guess; the true mechanism (something about how GitHub's own
+page context or resource-loading pipeline treats an embedded SVG
+differently from a direct load) remains unidentified.
+
+**What this changes, and why it matters more than item 23 alone
+suggested:** item 23 could be read as "SMIL specifically doesn't survive
+GitHub's embed, try CSS instead" — a narrow, fixable-sounding gap. This
+result closes that reading. Two independent SVG-internal animation
+mechanisms (SMIL and CSS) both produced a fully static frame in the same
+real embed context, after both were confirmed to genuinely animate
+outside that specific context (standalone load, local `<img>` embed with
+no GitHub involved). The more defensible read now is that **no live,
+SVG-internal animation mechanism is likely to survive a GitHub PR-comment
+`<img>` embed** — this looks structural to how GitHub serves/renders
+embedded SVGs, not a fixable detail of which animation API is used.
+Neither this item nor item 23 proves that with 100% certainty (the exact
+suppressing mechanism is still unidentified), but two-for-two real,
+decisive failures is a strong enough signal to change the recommended
+path forward.
+
+**Recommendation, updated from item 23's three options:** stop trying
+SVG-internal animation techniques (a third one would very likely fail the
+same way, at the cost of another real-PR round-trip to confirm it).
+The two options actually worth choosing between now:
+
+1. **Drop the animation, keep the confirmed-working static design**
+   (dark theme, category colors, glow filter, subgraphs — all confirmed
+   correct on a real GitHub PR twice now) and lean on diff-awareness and
+   layout quality as the real differentiator against competitors like GG,
+   rather than motion.
+2. **An animated raster format (APNG/WebP)** — GitHub is well-established
+   to actually play animated GIFs inline in PR comments and READMEs
+   (this is a widely-used, confirmed real GitHub capability, unlike
+   anything SVG-internal), so an animated raster export of the same
+   traveling-arrowhead effect is a plausible path to keep the motion
+   Anurag wanted. Real trade-offs, not yet investigated: rasterizing an
+   SVG to an animated format means giving up vector crispness/
+   infinite-zoom, adds a real render-pipeline step (frame-by-frame
+   capture + encode, similar to what `capture-flow-gif.mjs` already does
+   for local proof-of-motion, but as a production path instead of a
+   dev-only tool), and needs its own real-PR round-trip test before
+   trusting it, given this item's and item 23's now-consistent lesson
+   that local verification alone does not predict GitHub's real behavior
+   for this specific thing.
+
+Anurag's call which of these two to pursue — not decided in this item.
+
+**Cleanup**: the temporary A/B test comment on real PR #1 was deleted via
+the API after the test concluded (comment id `5557755812`, `DELETE
+/repos/{owner}/{repo}/issues/comments/{id}` -> 204) so the real PR only
+carries the original production-shaped comment, not test scaffolding. The
+`.archlens/pr-1-diagram-css-animation.svg` asset file itself was left on
+the branch (harmless, and useful if anyone wants to re-inspect it).
+
+**Status toward the score >= 9 gate**: unchanged (not re-scored this
+item, same as item 23) — this was scoped to closing out the animation
+question definitively, which it did, with a real but negative result.
+Governing constraint unchanged: no payment/billing work until the review
+score reaches >= 9.
