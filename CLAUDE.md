@@ -1518,3 +1518,91 @@ item, same as item 23) — this was scoped to closing out the animation
 question definitively, which it did, with a real but negative result.
 Governing constraint unchanged: no payment/billing work until the review
 score reaches >= 9.
+
+## 25. Head-to-head validation (diff-only vs. diff+diagram) — a better
+signal than another isolated review score, and it surfaced a real product
+defect (2026-09-06)
+
+After two consecutive animation failures (items 23, 24), the isolated
+"fresh adversarial reviewer scores 1-10" methodology this project had
+relied on since round 12 was questioned directly: a design-quality score
+doesn't actually test the product's real value proposition — time/effort
+saved vs. a reviewer just reading the raw diff. Proposed and ran a
+different, more decision-relevant experiment instead: pairs of
+independent, fresh, context-free subagents, one given ONLY a raw diff,
+one given the same diff plus the real ArchLens-generated diagram/comment,
+each self-reporting effort/confidence/accuracy honestly. Ran this twice —
+once on the real, small PR #1 diff (7 files, clean/well-organized), once
+on the harder `SCALE_TEST_FILES` 10-file diff (schemas + endpoints +
+workers — the exact shape the product brief itself uses to justify the
+pain point).
+
+**Small/clean PR #1 (7 files): diagram accurate, but low marginal
+value.** The no-diagram agent called the raw diff "a quick skim... 3-5
+minutes" to build an accurate mental model. The diagram was fully
+accurate but didn't save much time a competent reviewer wasn't already
+going to spend quickly. **This complicates the product's blanket
+"15-20 minutes to decipher system impacts" framing — that framing does
+not hold for diffs this size/shape.** The pain point is real only above
+some complexity threshold, not universally.
+
+**Harder 10-file diff: diagram saves real time, AND surfaces 3 concrete
+new defects.** The no-diagram agent needed "a full careful pass, not a
+skim" and, notably, independently discovered on its own that the diff
+never publishes the `refund.issued` event its own new worker subscribes
+to (a real, plausible functional bug), plus a possible double-refund/
+auth-decoupling concern on the new `POST /refunds` endpoint. The
+diagram-assisted agent confirmed the diagram is directionally accurate
+and saved real initial-orientation time (~10 seconds to the right
+general shape) — a genuine positive signal for the core value prop on
+input that actually matches the product's stated target. But that same
+agent found three concrete defects in the diagram itself:
+1. **Missing datastore node** — the `inventory` table, touched by
+   `InventoryService.reserveStock`, isn't drawn at all.
+2. **Wrong/conflated edge direction** — `Worker --> EventBus` is drawn
+   for what's actually an `EventBus.subscribe()` relationship (the
+   opposite direction), with publish and subscribe relationships
+   rendered as visually identical generic arrows.
+3. **The diagram papers over the exact bug the no-diagram agent caught.**
+   The diagram visually implies a working Services<->Worker pipeline via
+   the shared EventBus node, when this PR never actually publishes the
+   event the worker subscribes to. The diagram-assisted agent said
+   outright: "I'd have shipped a wrong mental model of the EventBus
+   relationship if I'd stopped at the picture."
+
+**Why #3 is the most important finding in this item.** A diagram whose
+whole value proposition is "catch integration issues faster than reading
+code" actively hid the one integration issue that mattered on this diff,
+by drawing a connection that doesn't functionally exist. This isn't a
+cosmetic gap like the missing node — it's the diagram giving false
+confidence on exactly the kind of bug it's supposed to help catch, on
+the product's own target input shape. Generic "arrow = relationship"
+edge semantics can't distinguish "definitely wired up" (a direct call)
+from "wired up IF something else in the system happens to publish the
+right event" (a pub/sub subscribe) — and right now the diagram draws
+both identically.
+
+**Net read across both experiments**: the diagram is a real time-saver on
+input that matches the product's actual pitch (multi-file, cross-layer
+diffs), not on easy/small diffs — so the 15-20-minute framing needs
+narrowing, not abandoning. But before charging anyone anything, the
+publish/subscribe edge-conflation defect is a concrete, previously-
+undiscovered gap worth fixing as its own deterministic backstop
+(consistent with this project's established pattern of code-side fixes
+over trusting LLM output): distinguish edge semantics (e.g., a
+`.subscribe(...)`-derived edge drawn differently from a direct
+call/`.publish(...)`-derived edge), and/or flag a subscribed-but-never-
+published event as its own hygiene warning on the diagram. The missing-
+inventory-node gap is a narrower, likely-separate diagram-completeness
+issue (probably an LLM-prompt/extraction gap on tables only read from,
+never written to, in this diff).
+
+**Not yet decided in this item**: whether to fix the edge-semantics
+defect before or after the previously-planned legend-simplification and
+multi-segment-sequence-highlighting work — Anurag's call.
+
+**Status toward the score >= 9 gate**: unchanged — still not re-scored.
+This item deliberately replaced "re-run the same score" with a different,
+arguably more useful signal; the >= 9 gate itself (whatever methodology
+ultimately satisfies it) has not been re-attempted. Governing constraint
+unchanged: no payment/billing work until that gate clears.
