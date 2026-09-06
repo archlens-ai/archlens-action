@@ -1146,3 +1146,158 @@ model too), continuing until it scores >= 9, before any payment/
 billing work, per Anurag's unchanged instruction: "we will do the
 payment integration when the score reaches >=9 [...] it wont sell
 until it is really helpfull."
+
+## 22. Round 11+12 fixes (2026-09-06): single-node subgraphs, sequence contrast, ungrouped externals — score still plateaued at 3/10, and a candid reassessment of the loop itself
+
+Anurag's instruction: research competitors/visual-enhancement tech, then
+keep building toward the score >= 9 gate, framed around his own experience
+building 3 prior SaaS products — genuine usefulness is the only real path
+to revenue, not hoping people pay out of charity.
+
+**Competitor/tech research done first, briefly**: closest competitor found
+is **GG (github.gg)** — auto-posts AI code reviews within a minute of PR
+open and generates architecture diagrams, freemium (3 free reviews, Pro
+for unlimited + private repos). Not confirmed whether its diagrams are
+diff-scoped or whole-repo — that's the one differentiation ArchLens can
+still credibly claim if true, unverified beyond that. Swark (VS Code
+extension, manual-invoke, no PR automation) and CodeSee (discontinued)
+are further back. On visual tech: Mermaid 11.14.0's `look` config
+(classic/handDrawn/neo) was spiked (`scripts/spike-mermaid-look.ts`,
+committed) — `handDrawn` is a genuine, no-competitor-uses-this visual
+differentiator but has real text-over-hachure legibility rough edges;
+`neo` showed negligible difference plus a minor artifact. Neither adopted
+yet — flagged as a real option, not chased further this round given the
+score-gate work took priority.
+
+**Three more deterministic backstops shipped, same pattern as every prior
+fix (prompt alone isn't reliable enough on the production model, so code
+enforces it after generation)** — full technical detail in the commit
+message and each function's own docstring in `diff-classify.ts`:
+
+1. `collapseSingleNodeSubgraphs` — strips a subgraph wrapping exactly one
+   bare node (round-11 finding: a colored box around a node that already
+   has its own colored border is noise, not signal).
+2. `annotateFullyNewSequence` — when a sequence diagram's diff-highlight
+   `rect` covers the ENTIRE flow, injects an explicit "Note over X,Y: New
+   flow added by this PR" banner, since a same-color highlight with
+   nothing un-highlighted to contrast against doesn't read as a signal at
+   a glance (round-11 finding).
+3. `groupUngroupedExternalNodes` — wraps 2+ contiguous, still-ungrouped
+   `external`/`externalContext` nodes into their own subgraph (round-12
+   finding: `EventBus`/`PaymentGateway`/`NotificationService` floating as
+   bare top-level nodes, one reached by a connector snaking across the
+   whole canvas — the SYSTEM_PROMPT permits leaving a *single* external
+   node ungrouped, the model over-applied that to three at once).
+
+All three verified two ways, not just unit-tested: (a) 23 new tests (145
+-> 168 backend tests, `tsc --noEmit` clean), and (b) re-run against the
+**real live Anthropic API**, not just hand-built fixtures — the
+fully-new-sequence case is the clearest proof of real-world firing: the
+literal phrase "New flow added by this PR" is nowhere in SYSTEM_PROMPT,
+yet it appeared in fresh real model output with the correct first/last
+participant span, screenshotted at
+`scripts/.dry-run-output/live-sequence-fullnew-final.png`. The
+single-node-subgraph collapse was similarly confirmed on a fresh call
+(`scripts/.dry-run-output/live-scale-collapsed-final.png`).
+`groupUngroupedExternalNodes` did NOT get a positive real-call
+confirmation this round — 3 fresh live-scale calls in a row all happened
+to have the model group the externals correctly on its own, so the
+backstop stayed a correctly-inert no-op each time; its unit test instead
+reproduces the exact real bug shape captured in the round-12 review
+screenshot. Worth being honest about, not glossing over: this specific
+fix has fixture-level, not fresh-live-call, positive confirmation.
+
+**Fresh round-12 adversarial review (context-free subagent, 4 freshly
+generated screenshots: flowchart stress test, fully-new sequence,
+partially-new sequence, real FastAPI commit): scored 3/10, would not
+approve.** Verified every claim before accepting it, per this project's
+own standing discipline — and this round, that discipline mattered more
+than usual, because the review's **top-ranked finding was wrong**:
+
+- **"The partial-highlight sequence diagram can't distinguish a few-new-
+  calls PR from a full rewrite"** — the reviewer's inference, not a
+  confirmed defect. Checked against the actual diff used: the
+  `checkoutController.ts` function body was genuinely empty before this
+  PR and every line inside it is newly added, so highlighting nearly the
+  entire flow as "new" is *correct*, not a granularity failure. That said,
+  the underlying architectural question the reviewer stumbled into by
+  accident is real and still open: a Mermaid `rect` block can only mark
+  ONE contiguous message range, so a PR that adds new calls at two
+  *disjoint* points in an existing flow (not tested this round) genuinely
+  could not be highlighted accurately with the current single-rect
+  design. Flagged, not fixed — building multi-segment highlighting is a
+  real scoped feature, not a quick patch.
+- **"Frozen mid-path arrowhead artifacts in the flowchart"** — real in
+  the sense that the screenshot shows it, but almost certainly an
+  artifact of the review methodology, not the product: `injectFlowRunners`
+  has no `begin` offset, so the `<animateMotion>` runner starts at SVG
+  load and is captured at a random point along its 2.8s loop whenever a
+  static screenshot happens to be taken — in the primary real consumption
+  context (a live GitHub PR page in an actual browser), this reads as
+  smooth continuous motion, which is the entire point of the feature
+  Anurag explicitly asked for (item 10: "if you can add dinamic glowing
+  arrow... that would awesome"). **The one thing this genuinely re-
+  surfaces, still unverified after 22 items of work**: whether GitHub's
+  actual PR-comment rendering pipeline preserves and runs SMIL animation
+  inside an embedded `<img src="....svg">` at all — flagged as an open
+  unknown as far back as item 8, never resolved because this sandbox has
+  no push access to a real GitHub repo. This is now the single highest-
+  value cheap unknown left to close.
+- **Orphaned `EventBus` node with a long connector** — real, and this is
+  the one finding that got fixed this round (`groupUngroupedExternalNodes`
+  above).
+- **High legend/color decoding overhead (9 visual states to learn)** and
+  **the one real-external-repo example being visually trivial (6 nodes,
+  CI/test scripts)** — both real observations, neither acted on this
+  round: the first is an inherent tradeoff of the category system's
+  expressiveness that would need a genuinely different design to reduce
+  (out of scope to improvise here); the second is a fair complaint about
+  *which* screenshot was chosen for review, not a product defect — a
+  harder real-external-repo example (more services, more DB touches)
+  would be a better review artifact next round.
+
+**Candid reassessment, not just another round of patches**: this is the
+**third review round in a row scoring in the 3-4/10 band** (item 19: 4/10,
+item 20: 4/10 -> 3/10 -> 3/10, this item: 3/10) despite roughly 20 real,
+verified bugs fixed across those rounds. The deterministic-hygiene-fix
+approach (find a concrete rendering/classification defect, patch it in
+code, verify against real API calls) has clearly been worth doing — every
+single fix was real, not busywork — but it is showing diminishing returns
+against the >= 9 bar specifically: the remaining gaps this round
+(multi-segment diff highlighting, the untested GitHub-rendering unknown,
+legend cognitive load, weak real-world example diversity) are
+architectural and/or require information this sandbox cannot produce on
+its own (real PR data, a real reviewer's actual reaction), not further
+one-function patches. Recommending three concrete next moves rather than
+mechanically running a round 13 immediately:
+
+1. **Close the single biggest disclosed-but-never-tested unknown**: push
+   ArchLens to a real (even throwaway) public GitHub repo and open one
+   real PR, to see the actual rendered comment — resolves whether the
+   animated-glow design (the feature Anurag most wanted) even survives
+   contact with GitHub's real rendering pipeline. Cheap, and the answer
+   changes what's worth polishing next either way.
+2. **Reconsider whether a fresh, context-free adversarial review is even
+   the right instrument to keep re-running toward >= 9.** It has been
+   excellent at finding concrete, real, fixable defects (every round has
+   surfaced genuine bugs) — but it has no anchor on the actual
+   alternative a paying user faces (mentally reconstructing the diff by
+   reading raw code for 15-20 minutes, today, with zero visual aid), so
+   its bar may be closer to "flawless professional design tool" than
+   "meaningfully better than the status quo." A head-to-head comparison
+   (a real engineer reviewing the same real PR with vs. without ArchLens)
+   would be a more decision-relevant signal than another 1-10 score from
+   a reviewer seeing it in isolation.
+3. **Multi-segment sequence highlighting** (the real architectural
+   question this round's top finding accidentally surfaced) is a
+   legitimate scoped feature to consider building next, if item 1 above
+   confirms the rendering pipeline is sound end to end first.
+
+**Status toward the score >= 9 gate**: still not met (3/10). Three real
+fixes shipped and verified this round; the standing instruction ("we will
+do the payment integration when the score reaches >=9 [...] it wont sell
+until it is really helpfull") remains unmet and unchanged — this item's
+honest read is that continuing to grind the same review loop unchanged is
+unlikely to close the remaining gap by itself, and item 1 above (real
+GitHub PR) is the highest-value next step before deciding what to build
+next.
