@@ -7,6 +7,8 @@ import {
   collapseSingleNodeSubgraphs,
   annotateFullyNewSequence,
   groupUngroupedExternalNodes,
+  annotatePublishSubscribeEdges,
+  sanitizeEdgeLabelQuotes,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
@@ -120,6 +122,15 @@ export async function handleGenerateRequest(
       }
     }
 
+    // Deterministic backstop, round-13 finding, found running a real live
+    // API call against the real 10-file scale diff: the model quoted an
+    // event name inside a pipe-delimited edge label (`|publishes
+    // "order.created"|`), which Mermaid's flowchart parser rejects outright
+    // — a real render failure validateMermaidSyntax's cheap regex check
+    // doesn't catch. Runs first, before anything else touches the source,
+    // since a syntax-breaking issue should never survive to any later step.
+    mermaidSource = sanitizeEdgeLabelQuotes(mermaidSource);
+
     // Deterministic override, not another LLM-trusting step: recompute
     // changed/Context/removed from the diff's own +/- lines rather than
     // the model's guess — see diff-classify.ts for why this exists (a
@@ -134,6 +145,23 @@ export async function handleGenerateRequest(
     // wasn't reliable enough on the smaller model this product actually
     // runs in production, so this strips any that slip through.
     mermaidSource = stripSelfLoopEdges(mermaidSource);
+
+    // Deterministic backstop, round-13 finding (head-to-head diff-only vs.
+    // diff+diagram validation, CLAUDE.md item 25): a real generated diagram
+    // (live-scale stress test) drew `Worker -->|calls| EventBus` for what
+    // the diff actually shows as an event *subscription*, not a direct
+    // call — visually implying a working pipeline the diff never actually
+    // wires up, which a no-diagram reviewer of the same diff caught on
+    // their own. Restyles any edge whose label already reads as a
+    // subscribe relationship to a dotted arrow (so it can never look like
+    // a direct call again) and appends an honestly-scoped warning when
+    // that edge's own endpoints show no corresponding publish anywhere in
+    // the SAME diagram. See annotatePublishSubscribeEdges's own docstring
+    // for what this deliberately does NOT attempt to fix (backwards edge
+    // direction, or a subscribe relationship the model labeled with a
+    // fully generic word like "calls" with no subscribe-language at all —
+    // both rely on the SYSTEM_PROMPT change in llm.ts actually landing).
+    mermaidSource = annotatePublishSubscribeEdges(mermaidSource);
 
     // Deterministic backstop, round-11 finding: a fresh adversarial review
     // of the tiered-model output flagged a subgraph wrapping a SINGLE node

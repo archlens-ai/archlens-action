@@ -142,6 +142,34 @@ architecture map or just a scatter of boxes, so follow it closely:
   caller/callee edge to show, its category color alone (plain vs.
   \`Context\`) already communicates that — it needs no edge at all, fake or
   otherwise. Every edge must run between two DIFFERENT nodes.
+- **Publish/subscribe (event-driven) relationships are NOT the same as a
+  direct function call, and must never be labeled or drawn as one.** A
+  direct call (\`OrdersController -->|calls| OrderService\`) means "this
+  code path definitely executes this other code," every time, unconditionally.
+  A pub/sub relationship means something weaker: "this code registers a
+  handler for an event, WHICH ONLY RUNS if something, somewhere, actually
+  emits that event" — that may or may not be true, may happen on a totally
+  separate deploy/schedule, and may not even exist yet in this PR. Collapsing
+  both into the same generic arrow actively misleads a reviewer into
+  believing a wiring exists that may not. So: when a node's own code REGISTERS
+  a handler on a bus/broker/queue (\`.subscribe(...)\`, \`.on(...)\`, an event
+  listener/consumer), label that edge starting with the literal word
+  "subscribes to" or "listens for" (include the event/topic name if the diff
+  shows one, e.g. \`|subscribes to refund.issued|\` — do NOT wrap it in
+  quotation marks: unlike a node's own \`["..."]\` label, Mermaid's
+  pipe-delimited \`|...|\` edge-label syntax does not support a quote
+  character inside it and will fail to parse if you include one), and draw
+  it FROM the bus/broker node TO the subscribing node (the event flows
+  outward from the bus to its listener — never the reverse). When a node's
+  own code SENDS an event onto a bus/broker/queue (\`.publish(...)\`,
+  \`.emit(...)\`, an event producer), label that edge starting with the
+  literal word "publishes" or "emits" (again including the event/topic name,
+  unquoted, if shown), drawn FROM the producing node TO the bus/broker node.
+  Never use a generic label like "calls" or "uses" for either of these — the
+  exact words above are what let ArchLens's own server-side code tell a real
+  dependency apart from an event-driven maybe-dependency, so use them
+  exactly even though they read slightly more verbose than your other edge
+  labels.
 - For "sequenceDiagram" diagrams, start with \`autonumber\` so steps are
   referenceable in review comments. Declare with \`actor Name\` anything
   outside this codebase's own control — a human user, or an external

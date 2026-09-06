@@ -1606,3 +1606,106 @@ This item deliberately replaced "re-run the same score" with a different,
 arguably more useful signal; the >= 9 gate itself (whatever methodology
 ultimately satisfies it) has not been re-attempted. Governing constraint
 unchanged: no payment/billing work until that gate clears.
+
+## 26. Fixed the publish/subscribe edge-conflation defect item 25 found —
+verified against three real live Anthropic calls, not just unit tests
+(2026-09-06)
+
+Anurag's instruction after item 25's synthesis: "do it then" — build the
+edge-semantics fix next, ahead of legend simplification and multi-segment
+sequence highlighting, per the recommendation that report ended with.
+
+**What shipped, two parts, same pattern as everything else in this
+project (prompt instruction + deterministic code backstop, since a prompt
+rule alone was never reliable enough on its own):**
+
+1. `llm.ts`'s SYSTEM_PROMPT now explicitly forbids labeling a pub/sub
+   (event-driven) relationship the same generic way as a direct call.
+   Registering a handler (`.subscribe(...)`, `.on(...)`) must be labeled
+   "subscribes to"/"listens for" and drawn FROM the bus TO the subscriber;
+   sending an event (`.publish(...)`, `.emit(...)`) must be labeled
+   "publishes"/"emits" and drawn FROM the producer TO the bus. Both must
+   include the event/topic name when the diff shows one.
+2. `diff-classify.ts` gained `annotatePublishSubscribeEdges()`: restyles
+   any edge whose label reads as a subscribe relationship to a genuinely
+   DOTTED arrow (Mermaid's own visual language for "not a direct/
+   unconditional connection," so it can never again look identical to a
+   real function call), and appends a short, honestly-scoped warning when
+   this SAME diagram doesn't show a matching publish for that specific
+   event. Deliberately claims nothing about the real codebase (this tool
+   only ever sees a diff) — only what's true of the picture itself.
+
+**Verified against three separate real, live Anthropic API calls before
+calling this done — each one caught something the previous one didn't:**
+
+- **Call 1** confirmed the prompt change works in spirit (the model
+  immediately used "publishes"/"subscribes to" phrasing, unprompted by
+  any example beyond the instruction) but surfaced a real, confirmed
+  render failure: the model quoted the event name inside the pipe-
+  delimited edge label (`|publishes "order.created"|`), and Mermaid's
+  flowchart parser rejects a quote character there outright — a genuine
+  502, not a hypothetical, that the existing `validateMermaidSyntax`
+  check doesn't catch (only the real parser, much later, does). Fixed
+  two ways: corrected the prompt to ask for the topic unquoted, AND added
+  a new deterministic backstop, `sanitizeEdgeLabelQuotes()`, that strips
+  any quote character from inside a flowchart edge's pipe-delimited label
+  regardless of why it's there — this project's own established
+  discipline of never trusting a prompt fix alone applied to itself, one
+  call after being written.
+- **Call 2**, after that fix, produced a diagram that got the pub/sub
+  edge DIRECTION right on the first try (`EventBus -.-> RefundWorker`,
+  bus-to-subscriber, matching the new instruction) and got the topic-
+  mismatch case exactly right too: it published `order.created` and
+  separately subscribed to `refund.issued` on the same EventBus node —
+  the identical real-world shape of the bug item 25 found. A naive
+  node-level-only check ("does this bus appear in ANY publish edge?")
+  would have missed this, since EventBus does publish something, just
+  not the thing being subscribed to. `annotatePublishSubscribeEdges()`
+  was corrected mid-session (before this call, based on reasoning about
+  the risk of exactly this shape, then confirmed against real output) to
+  compare the actual extracted event/topic name on each side rather than
+  just node participation, falling back to the weaker node-level check
+  only when a topic name can't be confidently extracted from either side.
+- **Call 2's real render** also caught a second, more subtle bug: the
+  restyled dotted arrow rendered SOLID in the actual SVG output, not
+  dotted. Root cause, found by inspecting the rendered SVG's own
+  `<style>` blocks: `applyBoldGlowStyling()`'s existing blanket rule
+  (`.flowchart-link{stroke-dasharray:none !important}`, added round-5/6
+  for the bold/glow redesign) silently overrode the dotted style back to
+  solid — `!important` beats a non-important rule regardless of selector
+  specificity, so mermaid's own more-specific `.edge-pattern-dotted` rule
+  lost even though it's more specific. Fixed with the same shape as the
+  existing `REMOVED_EDGE_CLASS` precedent in the same function: a
+  targeted `.flowchart-link.edge-pattern-dotted{stroke-dasharray:6 4
+  !important}` rule declared after the blanket one.
+- **Final visual confirmation**, not just re-reading the CSS text:
+  re-rendered the fixed pipeline against the real 10-file scale diff a
+  third time and screenshotted the actual SVG the same way GitHub embeds
+  it (`screenshot-svg.mjs`). The EventBus→RefundWorker edge renders
+  visibly dotted, clearly distinct from every solid edge in the same
+  diagram, with the label "subscribes to refund.issued ⚠ no publish edge
+  for this event shown in this diagram" fully legible.
+
+**Disclosed, not fixed, limitations**: edge DIRECTION correction relies
+entirely on the prompt change landing — there's no safe way to infer
+"which endpoint is the bus" from a bare edge line and deterministically
+flip a backwards one without real semantic understanding, so a smaller
+production model that ignores the direction instruction on some future
+diff would still draw it backwards (the topic-mismatch warning and
+dotted styling still apply regardless of which way the arrow points,
+which is some mitigation). The topic-mismatch check is diagram-scoped by
+design (see the docstring) — it can never know an event is published
+somewhere the diff doesn't touch, and says so in its own wording rather
+than overclaiming. The warning text is fairly long and, on the real
+10-file diagram, ran close to the edge of the ThirdParty subgraph's
+dashed border in the screenshot — legible, but a candidate for
+shortening if a future review flags it as cramped. 175 -> 191 backend
+tests (16 new: `annotatePublishSubscribeEdges` x11,
+`sanitizeEdgeLabelQuotes` x5), full suite passing, `tsc --noEmit` clean
+on both workspaces.
+
+**Status toward the score >= 9 gate**: unchanged, not re-scored — this
+was scoped to fixing the specific, concrete defect item 25 found, not to
+re-running the review loop. The previously-planned next steps (legend
+simplification, multi-segment sequence highlighting) and the animation
+decision remain open, Anurag's call on sequencing.

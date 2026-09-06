@@ -599,6 +599,31 @@ function labelIndicatesRemoval(dataId: string | null, edgeLabels: Map<string, st
  * the general one, so its `!important`s win) matching the removed-node
  * palette: dim red, dashed, no glow — "this connection is gone too," not
  * "this connection is thriving."
+ *
+ * Round-13 bug, found the moment annotatePublishSubscribeEdges (see
+ * diff-classify.ts) was verified end to end against a real render, not
+ * just its own unit tests: that function restyles a subscribe-relationship
+ * edge to Mermaid's own dotted arrow syntax (`-.->`) specifically so it can
+ * never again render visually identical to a direct call — but the
+ * blanket `.flowchart-link{stroke-dasharray:none !important}` rule below
+ * silently overrode it straight back to a solid line in the actual
+ * rendered SVG (confirmed by inspecting the real output: the path carried
+ * both `edge-pattern-dotted` and `flowchart-link` classes, and CSS's own
+ * "!important always beats a non-important rule regardless of specificity"
+ * behavior meant this blanket solid override won even though mermaid's own
+ * more-specific `#archlens-diagram .edge-pattern-dotted` rule has higher
+ * selector specificity — !important short-circuits that comparison
+ * entirely). Same fix shape as the REMOVED_EDGE_CLASS case just above:
+ * a rule specifically for `.edge-pattern-dotted` edges, declared after the
+ * general one (and before the removed-edge rule, so a subscribe edge that
+ * ALSO touches a removed node still correctly falls back to the more
+ * important "this connection is gone" styling), restoring a real dash
+ * pattern with its own `!important`. Deliberately keyed off Mermaid's own
+ * `edge-pattern-dotted` class rather than a bespoke marker class: nothing
+ * in this pipeline emits a dotted arrow for any reason other than a
+ * subscribe relationship today, and "dotted = not a direct/guaranteed
+ * connection" is the same visual language this fix wants regardless of
+ * which future feature might also reach for a dotted arrow.
  */
 export function applyBoldGlowStyling(svg: string): string {
   const nodeCategories = extractNodeCategories(svg);
@@ -613,6 +638,7 @@ export function applyBoldGlowStyling(svg: string): string {
     `<style>` +
     `text{font-weight:700 !important;}` +
     `.flowchart-link{stroke-width:2.5px !important;stroke-dasharray:none !important;filter:url(#${GLOW_FILTER_ID});}` +
+    `.flowchart-link.edge-pattern-dotted{stroke-dasharray:6 4 !important;}` +
     `.${REMOVED_EDGE_CLASS}{stroke:#f85149 !important;stroke-width:1.5px !important;stroke-dasharray:3 3 !important;filter:none !important;opacity:0.7;}` +
     `.messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.edgeLabel{font-weight:700 !important;}` +

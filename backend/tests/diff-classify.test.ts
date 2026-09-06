@@ -7,6 +7,8 @@ import {
   collapseSingleNodeSubgraphs,
   annotateFullyNewSequence,
   groupUngroupedExternalNodes,
+  annotatePublishSubscribeEdges,
+  sanitizeEdgeLabelQuotes,
   type DiffPatchFile,
 } from "../lib/diff-classify.js";
 
@@ -756,5 +758,170 @@ describe("groupUngroupedExternalNodes", () => {
   it("is a no-op for sequenceDiagram", () => {
     const source = "sequenceDiagram\n  A->>B: hi";
     expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+});
+
+describe("annotatePublishSubscribeEdges", () => {
+  it("restyles a subscribe-labeled solid edge to a dotted arrow", () => {
+    const source = [
+      "flowchart TD",
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      '  Worker -->|subscribes to "refund.issued"| Bus',
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toContain('Worker -.-> |subscribes to "refund.issued"');
+    expect(result).not.toMatch(/Worker\s+-->/);
+  });
+
+  it("appends the no-publisher warning when neither endpoint has a shown publish", () => {
+    const source = [
+      "flowchart TD",
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      '  Worker -->|subscribes to "refund.issued"| Bus',
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toContain("not shown as published anywhere in this diagram");
+  });
+
+  it("does NOT append the warning when the bus has a publish edge shown elsewhere in the diagram", () => {
+    const source = [
+      "flowchart TD",
+      '  Refunds["RefundService"]',
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      '  Refunds -->|publishes "refund.issued"| Bus',
+      '  Worker -->|subscribes to "refund.issued"| Bus',
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).not.toContain("not shown as published anywhere in this diagram");
+    // The subscribe edge is still restyled dotted even though it's not warned.
+    expect(result).toContain('Worker -.-> |subscribes to "refund.issued"');
+    // The publish edge itself is left as a normal solid arrow.
+    expect(result).toContain('Refunds -->|publishes "refund.issued"| Bus');
+  });
+
+  it("warns on a topic mismatch even when the bus DOES publish something -- just not the event being subscribed to (real bug: found running a live Anthropic call, publishes order.created and separately subscribes to refund.issued on the same EventBus node)", () => {
+    const source = [
+      "flowchart TD",
+      '  OrderService["OrderService"]',
+      '  Bus["EventBus"]',
+      '  Worker["RefundWorker"]',
+      "  OrderService -->|publishes order.created| Bus",
+      "  Bus -->|subscribes to refund.issued| Worker",
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toContain("no publish edge for this event shown in this diagram");
+    // A node-level-only check would have wrongly stayed silent here, since
+    // Bus does appear in a publish edge -- just for a different event.
+    expect(result).not.toContain("not shown as published anywhere in this diagram");
+    // The publish edge itself is untouched.
+    expect(result).toContain("OrderService -->|publishes order.created| Bus");
+  });
+
+  it("does not warn when the subscribed and published topic names match", () => {
+    const source = [
+      "flowchart TD",
+      '  OrderService["OrderService"]',
+      '  Bus["EventBus"]',
+      '  Worker["RefundWorker"]',
+      "  OrderService -->|publishes refund.issued| Bus",
+      "  Bus -->|subscribes to refund.issued| Worker",
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).not.toContain("⚠");
+  });
+
+  it("recognizes a raw .subscribe( call-shaped label, not just the exact prompt phrasing", () => {
+    const source = [
+      "flowchart TD",
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      "  Worker -->|.subscribe('refund.issued')| Bus",
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toMatch(/Worker\s+-\.->/);
+  });
+
+  it("leaves an already-dotted subscribe edge's arrow alone but still evaluates the warning", () => {
+    const source = [
+      "flowchart TD",
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      '  Worker -.->|subscribes to "refund.issued"| Bus',
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toContain("not shown as published anywhere in this diagram");
+  });
+
+  it("does not restyle or warn on a publish-only edge", () => {
+    const source = [
+      "flowchart TD",
+      '  Refunds["RefundService"]',
+      '  Bus["EventBus"]',
+      '  Refunds -->|publishes "refund.issued"| Bus',
+    ].join("\n");
+    expect(annotatePublishSubscribeEdges(source)).toBe(source);
+  });
+
+  it("returns the source unchanged when there are no subscribe-labeled edges at all", () => {
+    const source = ['flowchart TD', '  A["a.ts"] --> B["b.ts"]', "  class A,B logic"].join("\n");
+    expect(annotatePublishSubscribeEdges(source)).toBe(source);
+  });
+
+  it("is idempotent -- running it twice never double-appends the warning", () => {
+    const source = [
+      "flowchart TD",
+      '  Worker["RefundWorker"]',
+      '  Bus["EventBus"]',
+      '  Worker -->|subscribes to "refund.issued"| Bus',
+    ].join("\n");
+    const once = annotatePublishSubscribeEdges(source);
+    const twice = annotatePublishSubscribeEdges(once);
+    expect(twice).toBe(once);
+    const warningCount = (twice.match(/not shown as published anywhere in this diagram/g) ?? []).length;
+    expect(warningCount).toBe(1);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = "sequenceDiagram\n  A->>B: subscribes to refund.issued";
+    expect(annotatePublishSubscribeEdges(source)).toBe(source);
+  });
+});
+
+describe("sanitizeEdgeLabelQuotes", () => {
+  it("strips a double-quoted event name from a pipe-delimited edge label (real bug: a live Anthropic call quoted it exactly like the SYSTEM_PROMPT's own example used to, and Mermaid's parser rejects a quote inside |...|)", () => {
+    const source = [
+      "flowchart TD",
+      '  Refunds["RefundService"]',
+      '  Bus["EventBus"]',
+      '  Refunds -->|publishes "order.created"| Bus',
+    ].join("\n");
+    const result = sanitizeEdgeLabelQuotes(source);
+    expect(result).toContain("|publishes order.created|");
+    // Node labels keep their own quotes -- only the edge's pipe-delimited
+    // label is sanitized.
+    expect(result).toContain('Refunds["RefundService"]');
+  });
+
+  it("strips single quotes too", () => {
+    const source = ['flowchart TD', '  A["a"]', '  B["b"]', "  A -->|calls 'x'| B"].join("\n");
+    expect(sanitizeEdgeLabelQuotes(source)).toContain("|calls x|");
+  });
+
+  it("never touches a node's own quoted label", () => {
+    const source = ['flowchart TD', '  A["My Node"] --> B["Other Node"]'].join("\n");
+    expect(sanitizeEdgeLabelQuotes(source)).toBe(source);
+  });
+
+  it("returns the source unchanged when no edge label contains a quote", () => {
+    const source = ['flowchart TD', '  A["a"] -->|calls| B["b"]'].join("\n");
+    expect(sanitizeEdgeLabelQuotes(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = 'sequenceDiagram\n  A->>B: publishes "order.created"';
+    expect(sanitizeEdgeLabelQuotes(source)).toBe(source);
   });
 });

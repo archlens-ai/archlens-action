@@ -597,6 +597,264 @@ export function assignMissingCategories(source: string): string {
   return `${source.trimEnd()}\nclass ${missing.join(",")} logicContext\n`;
 }
 
+// Matches a labeled flowchart edge line, capturing the arrow token
+// separately from stripSelfLoopEdges's FLOWCHART_EDGE_RE above (which only
+// needs source/target, not the arrow style or label text). Same arrow
+// alternation (solid/dotted/thick, each optionally with an o/x/> head), same
+// optional `[...]` inline node-shape support on either endpoint.
+const EVENT_EDGE_RE =
+  /^(\s*)(\w+)((?:\[[^\]]*\])?)\s*(--[ox>]|-\.-[ox>]?|==[ox>])\s*(?:\|([^|]*)\|\s*)?(\w+)((?:\[[^\]]*\])?)\s*$/;
+
+// Matches a label the model gave a pub/sub-style edge. Deliberately broad on
+// the subscribe side (covers the prompt's own required phrasing --
+// "subscribes to"/"listens for" -- plus the raw method-call shape a model
+// might fall back to, `.subscribe(`/`.on(`) and correspondingly broad on the
+// publish side, so this still catches edges from before the SYSTEM_PROMPT
+// change above, not only new generations.
+const SUBSCRIBE_LABEL_RE = /\b(?:subscribes?(?:\s+to)?|listens?(?:\s+(?:for|on))?|\.subscribe\(|\.on\()/i;
+const PUBLISH_LABEL_RE = /\b(?:publish(?:es)?|emits?|\.publish\(|\.emit\()/i;
+
+const NO_PUBLISHER_SUFFIX = " ⚠ not shown as published anywhere in this diagram";
+const TOPIC_MISMATCH_SUFFIX = " ⚠ no publish edge for this event shown in this diagram";
+
+// Best-effort extraction of the actual event/topic name out of a pub/sub
+// edge label, so the no-publisher check below can compare WHICH event is
+// published vs. subscribed, not just whether the bus node appears in any
+// publish edge at all. Found necessary the moment this was verified against
+// a real live Anthropic call (not assumed): the live-scale diff diagram
+// published "order.created" and separately subscribed to "refund.issued" on
+// the SAME EventBus node -- exactly the shape of the real bug this backstop
+// exists to catch -- but a node-level-only check (does EventBus appear in
+// ANY publish edge?) would have missed it, since EventBus does publish
+// something, just not the thing being subscribed to. Tries the raw
+// method-call shape first (`.subscribe('x')`/`.on("x")`/`.publish('x')`/
+// `.emit("x")`), then the phrase shape the SYSTEM_PROMPT actually asks for
+// ("subscribes to x" / "publishes x"). Returns null (not "no topic") when
+// neither shape yields anything -- callers must treat null as "unknown,"
+// not "no event," and fall back to the weaker node-level check rather than
+// either warn or stay silent on a guess.
+function extractEventTopic(label: string, kind: "subscribe" | "publish"): string | null {
+  const callMatch = /\.(?:subscribe|on|publish|emit)\(\s*['"]([^'"]+)['"]/.exec(label);
+  if (callMatch?.[1]) return callMatch[1].trim().toLowerCase();
+
+  const phraseRe =
+    kind === "subscribe"
+      ? /\b(?:subscribes?(?:\s+to)?|listens?(?:\s+(?:for|on))?)\s+(.+)$/i
+      : /\b(?:publish(?:es)?|emits?)\s+(.+)$/i;
+  const phraseMatch = phraseRe.exec(label.trim());
+  const raw = phraseMatch?.[1]?.trim();
+  return raw ? raw.replace(/^['"]|['"]$/g, "").toLowerCase() : null;
+}
+
+/**
+ * Round-13 finding, from the head-to-head diff-only vs. diff+diagram
+ * validation (2026-09-06, CLAUDE.md item 25): on the harder, product-
+ * representative 10-file scale diff, the diagram drew `Worker -->
+ * |calls| EventBus` for what the diff actually shows as an
+ * `EventBus.subscribe(...)` registration -- the opposite semantic
+ * relationship from a direct call, rendered with the exact same generic
+ * arrow. A subagent given ONLY the diagram (no code) said outright: "I'd
+ * have shipped a wrong mental model of the EventBus relationship if I'd
+ * stopped at the picture" -- the diagram visually implied a working,
+ * unconditional Services<->Worker pipeline through the shared EventBus
+ * node, when the diff never actually publishes the one event
+ * (`refund.issued`) that worker subscribes to. A no-diagram reviewer of
+ * the exact same diff caught that missing wiring on their own, purely by
+ * reading the code -- the diagram made the SAME diff look safer than it
+ * is, which is close to the worst thing a "catch integration issues
+ * faster" product can do.
+ *
+ * This is a two-part fix, same "prompt rule alone isn't reliable enough,
+ * so code enforces it after generation" pattern as every other function
+ * in this file: llm.ts's SYSTEM_PROMPT now requires "subscribes to"/
+ * "publishes" phrasing (and the correct bus-to-subscriber edge direction)
+ * for event-driven relationships, but a smaller production model won't
+ * always comply, so this backstop (a) re-styles any edge whose label
+ * reads as a subscribe relationship (regardless of whether the model used
+ * the exact required phrasing) as a DOTTED arrow rather than a solid one
+ * -- Mermaid's own visual language for "not a direct/unconditional
+ * connection" -- so it can never again look identical to a real function
+ * call, and (b) appends a short, honestly-scoped warning when this diagram
+ * doesn't itself show a matching publish. Verified live against a real
+ * Anthropic call before settling on this shape: the first live run
+ * produced a diagram that DID publish something on the same EventBus node
+ * (`publishes order.created`) while separately subscribing to a different,
+ * unpublished event (`subscribes to refund.issued`) -- a naive "does this
+ * node appear in ANY publish edge" check would have missed exactly the
+ * bug this exists to catch, so extractEventTopic() below compares the
+ * actual event/topic NAME on each side when both are extractable, and only
+ * falls back to the weaker node-level check when a name can't be pulled
+ * out of one side or the other. Either way this deliberately claims
+ * nothing about the real codebase (this tool only ever sees a diff, never
+ * the whole repo, so it cannot know whether the event is published
+ * somewhere untouched by this PR) -- it states only what's true of the
+ * diagram itself: this picture doesn't show a matching publish, which is
+ * exactly the situation a reviewer should independently verify rather than
+ * take on faith from the arrow. Deliberately does NOT
+ * attempt to fix a backwards subscribe-edge's DIRECTION (subscriber-to-bus
+ * vs. the correct bus-to-subscriber) -- inferring "which endpoint is the
+ * bus" reliably from a bare edge line, without the SYSTEM_PROMPT's own
+ * correct-direction instruction actually landing, isn't something a
+ * regex over the rendered source can safely guess at; that half of the
+ * fix relies on the prompt change alone; the dotted-style and no-publisher
+ * warning below are unaffected by which way the arrow happens to point,
+ * since both only key off which endpoints participate in ANY subscribe/
+ * publish-labeled edge, not the direction of any one edge. A no-op for
+ * sequenceDiagram, where this arrow-styling syntax doesn't apply and the
+ * EventBus defect above was never observed (only the flowchart side of
+ * this project's own live-scale stress test showed it).
+ */
+export function annotatePublishSubscribeEdges(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+
+  interface ParsedEdge {
+    lineIdx: number;
+    source: string;
+    target: string;
+    label: string | null;
+    isSubscribe: boolean;
+    isPublish: boolean;
+  }
+
+  const edges: ParsedEdge[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = EVENT_EDGE_RE.exec(lines[i]!);
+    if (!m) continue;
+    const [, , src, , , label, tgt] = m;
+    const labelText = label ?? null;
+    edges.push({
+      lineIdx: i,
+      source: src!,
+      target: tgt!,
+      label: labelText,
+      isSubscribe: !!labelText && SUBSCRIBE_LABEL_RE.test(labelText),
+      isPublish: !!labelText && PUBLISH_LABEL_RE.test(labelText),
+    });
+  }
+
+  const subscribeEdges = edges.filter((e) => e.isSubscribe);
+  if (subscribeEdges.length === 0) {
+    return source; // nothing to restyle or check -- don't touch the source at all
+  }
+
+  // Every node that participates (as either endpoint) in ANY publish-
+  // labeled edge, anywhere in this diagram -- the fallback signal used only
+  // when a specific event/topic name can't be confidently extracted from
+  // either side (see extractEventTopic's own docstring for why topic
+  // comparison is preferred when available).
+  const publishParticipants = new Set<string>();
+  // Every event/topic name this diagram shows being published, anywhere --
+  // extracted only from edges whose label yields one; publish edges whose
+  // topic couldn't be extracted don't contribute here (they still count
+  // toward publishParticipants above).
+  const publishedTopics = new Set<string>();
+  for (const e of edges) {
+    if (e.isPublish && e.label) {
+      publishParticipants.add(e.source);
+      publishParticipants.add(e.target);
+      const topic = extractEventTopic(e.label, "publish");
+      if (topic) publishedTopics.add(topic);
+    }
+  }
+
+  let anyChange = false;
+  const outLines = [...lines];
+
+  for (const edge of subscribeEdges) {
+    const m = EVENT_EDGE_RE.exec(lines[edge.lineIdx]!)!;
+    const [, indent, srcId, srcShape, arrow, label, tgtId, tgtShape] = m;
+
+    // Re-style: force a dotted arrow so a subscribe relationship can never
+    // render visually identical to a direct call. Already-dotted (`-.-`)
+    // arrows are left as-is; thick (`==`) arrows are left alone too --
+    // rare enough in real output that guessing a dotted-thick hybrid isn't
+    // worth the risk of producing invalid Mermaid syntax.
+    const newArrow = arrow!.startsWith("--") ? `-.-${arrow!.slice(2)}` : arrow!;
+
+    // Prefer an exact topic comparison (this edge's own subscribed event
+    // vs. every event this diagram shows being published) when both sides
+    // yield an extractable name -- this is what actually catches the real
+    // bug (subscribes to "refund.issued" while the bus only ever publishes
+    // "order.created" elsewhere), which a node-level-only check would
+    // miss. Fall back to the weaker "does this edge's own endpoint show up
+    // in ANY publish edge at all" check when this edge's topic can't be
+    // extracted, or when NO publish edge in the diagram yielded an
+    // extractable topic either (nothing to compare against) -- in either
+    // case there isn't enough signal to make a specific claim, so this
+    // falls back to the broader, still-honestly-scoped question instead of
+    // guessing a mismatch that might not be real.
+    const subscribedTopic = label ? extractEventTopic(label, "subscribe") : null;
+    const canCompareTopics = subscribedTopic !== null && publishedTopics.size > 0;
+    const missingWarning = canCompareTopics
+      ? !publishedTopics.has(subscribedTopic!)
+        ? TOPIC_MISMATCH_SUFFIX
+        : null
+      : !(publishParticipants.has(edge.source) || publishParticipants.has(edge.target))
+        ? NO_PUBLISHER_SUFFIX
+        : null;
+
+    const alreadyWarned =
+      (label?.includes(NO_PUBLISHER_SUFFIX) || label?.includes(TOPIC_MISMATCH_SUFFIX)) ?? false;
+    const newLabel = missingWarning && !alreadyWarned ? `${label ?? ""}${missingWarning}` : label;
+
+    if (newArrow === arrow && newLabel === label) continue; // nothing to change on this edge
+
+    anyChange = true;
+    const labelPart = newLabel !== null && newLabel !== undefined && newLabel !== "" ? `|${newLabel}| ` : "";
+    outLines[edge.lineIdx] =
+      `${indent}${srcId}${srcShape ?? ""} ${newArrow} ${labelPart}${tgtId}${tgtShape ?? ""}`;
+  }
+
+  if (!anyChange) {
+    return source;
+  }
+  return outLines.join("\n");
+}
+
+/**
+ * Round-13 finding, found running the actual live Anthropic API against the
+ * real 10-file scale diff to verify the SYSTEM_PROMPT change above (llm.ts):
+ * the model DID adopt the requested "publishes"/"subscribes to" phrasing on
+ * its very first live call — real confirmation the prompt change works, not
+ * assumed — but it quoted the event name inside the edge label exactly as
+ * shown in the pre-fix version of that prompt instruction
+ * (\`|publishes "order.created"|\`), and Mermaid's flowchart parser rejects
+ * a quote character inside a pipe-delimited edge label outright ("Parser
+ * error... Expecting ... got 'STR'"). That's a real, confirmed render
+ * failure (a 502, wasting a live API call with no repair-retry chance,
+ * since validateMermaidSyntax's cheap regex check doesn't catch this and
+ * only the real mermaid parser does, much later). The SYSTEM_PROMPT
+ * instruction was corrected to ask for the event name unquoted — but per
+ * this project's own established pattern, a prompt instruction alone isn't
+ * reliable enough on the smaller production model to trust unconditionally,
+ * so this strips any quote character found inside a flowchart edge's own
+ * pipe-delimited label before it ever reaches the renderer, regardless of
+ * why it's there (this specific pub/sub case, or any other reason a future
+ * model version might quote part of an edge label). Node labels
+ * (\`Id["..."]\`) are untouched — quotes are valid and expected there;
+ * this only ever touches the text between a \`|...|\` pair on an edge line.
+ */
+export function sanitizeEdgeLabelQuotes(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  let changed = false;
+  const result = source.replace(/\|([^|]*)\|/g, (full, label: string) => {
+    if (!/['"]/.test(label)) return full;
+    changed = true;
+    return `|${label.replace(/['"]/g, "")}|`;
+  });
+
+  return changed ? result : source;
+}
+
 const SUBGRAPH_OPEN_RE = /^\s*subgraph\s+(\w+)(?:\[[^\]]*\])?\s*$/;
 const SUBGRAPH_END_RE = /^\s*end\s*$/;
 const NODE_DECL_RE = /^(\w+)\s*\[[^\]]*\]\s*$/;
