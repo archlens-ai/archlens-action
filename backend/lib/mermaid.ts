@@ -202,37 +202,45 @@ interface LegendItem {
 // showing its solid (changed) and dashed (context) swatch side by side —
 // the combination the diagram actually uses — with the solid/dashed
 // meaning explained once, in its own caption, rather than repeated per item.
-// (Round-6 redesign below changed how these items are LAID OUT — a
-// horizontal, full-width strip instead of a vertical list — not what they
-// show; the categories and their swatch pairs are unchanged from round 3.)
+// (Round-6 redesign changed how these items are LAID OUT — a horizontal,
+// full-width strip instead of a vertical list — not what they show.)
+//
+// Round-14 redesign, from the repeated-but-never-fixed "high legend/
+// decoding overhead" complaint (round 12, and the head-to-head validation
+// notes): the round-3 layout above still cost 9 total swatches (4
+// categories x 2 + 1 removed) to convey what is actually only 5 distinct
+// facts -- "solid vs. dashed" behaves IDENTICALLY across all 4 categories,
+// so showing that pairing 4 separate times taught the same thing 4 times
+// over, not 4 different things. Each category now shows its ONE solid
+// swatch only (the color IS the category), and the dashed pattern itself
+// is taught exactly once via a single dedicated "Existing context" item in
+// a neutral gray (the same #6e7681 already used elsewhere in this file for
+// neutral subgraph/region chrome, so it doesn't read as a 5th category
+// color) -- 6 total swatches, zero information lost: every (category x
+// solid/dashed) combination the diagram actually draws is still fully
+// decodable from "category's own color" + "dashed always means existing
+// context, solid always means changed," which LEGEND_CAPTION below still
+// states in words for anyone who wants the textual definition too.
 const LEGEND_ITEMS: LegendItem[] = [
   {
     label: "Endpoint",
-    swatches: [
-      { fill: "#1c2128", stroke: "#58a6ff", dashed: false },
-      { fill: "#161b22", stroke: "#58a6ff", dashed: true },
-    ],
+    swatches: [{ fill: "#1c2128", stroke: "#58a6ff", dashed: false }],
   },
   {
     label: "Logic",
-    swatches: [
-      { fill: "#1c2128", stroke: "#7ee787", dashed: false },
-      { fill: "#161b22", stroke: "#7ee787", dashed: true },
-    ],
+    swatches: [{ fill: "#1c2128", stroke: "#7ee787", dashed: false }],
   },
   {
     label: "Datastore",
-    swatches: [
-      { fill: "#1c2128", stroke: "#bc8cff", dashed: false },
-      { fill: "#161b22", stroke: "#bc8cff", dashed: true },
-    ],
+    swatches: [{ fill: "#1c2128", stroke: "#bc8cff", dashed: false }],
   },
   {
     label: "External",
-    swatches: [
-      { fill: "#1c2128", stroke: "#d29922", dashed: false },
-      { fill: "#161b22", stroke: "#d29922", dashed: true },
-    ],
+    swatches: [{ fill: "#1c2128", stroke: "#d29922", dashed: false }],
+  },
+  {
+    label: "Existing context",
+    swatches: [{ fill: "#161b22", stroke: "#6e7681", dashed: true }],
   },
   {
     label: "Removed by this PR",
@@ -286,8 +294,10 @@ function estTextWidth(text: string, fontSize: number): number {
  * complaint once ELK's layout meant most diagrams render far wider than
  * the legend card itself needs, leaving visible empty space next to it).
  * Items (the solid/dashed caption, then one entry per category showing its
- * solid-changed/dashed-context swatch pair side by side — unchanged from
- * round 3) are packed left-to-right and wrap onto additional rows only if
+ * single solid swatch, then one "Existing context" item teaching the dashed
+ * pattern exactly once instead of once per category — round-14 redesign,
+ * see LEGEND_ITEMS's own comment — then "Removed by this PR") are packed
+ * left-to-right and wrap onto additional rows only if
  * the diagram is too narrow to fit them on one line, so a normal-width
  * diagram gets one compact caption bar and a cramped one still gets a
  * legible legend rather than either overflow or a mis-sized card. Drawn

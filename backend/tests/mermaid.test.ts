@@ -395,22 +395,27 @@ describe("appendLegend", () => {
     expect(withLegend).toContain("</svg>");
   });
 
-  // Round-3 redesign, from a second review: v2 listed changed/context and
-  // endpoint/logic/datastore as five disconnected swatches, so a viewer
-  // had to cross-reference two lists to decode "solid blue". Each category
-  // now gets one row pairing its solid (changed) and dashed (context)
-  // swatch together, with the solid/dashed meaning explained once.
-  it("pairs a solid and dashed swatch on the same row per category, not as separate disconnected entries", () => {
+  // Round-14 redesign, from the repeated "high legend/decoding overhead"
+  // review complaint (round 12): the round-3 layout cost 9 swatches (4
+  // categories x solid+dashed, plus removed) to teach only 5 distinct
+  // facts, since the solid/dashed pairing is identical across every
+  // category. Each category now shows ONE solid swatch only, and the
+  // dashed pattern is taught exactly once via a dedicated "Existing
+  // context" item — 6 total swatches, no information lost.
+  it("shows one solid swatch per category plus a single generic dashed example, instead of a dashed swatch repeated per category", () => {
     const withLegend = appendLegend(sampleSvg, "flowchart");
     expect(withLegend).toContain("solid = changed by this PR");
     expect(withLegend).toContain("dashed = existing context");
+    expect(withLegend).toContain("Existing context");
     expect(withLegend).toContain("Removed by this PR");
-    // Each of the 4 categories (endpoint/logic/datastore/external) renders
-    // two swatch <rect>s on its row (solid + dashed), plus "removed"'s
-    // single always-dashed swatch — count dashed swatch rects to confirm
-    // the variants are actually present, not just the labels.
+    // Exactly 2 dashed swatches total: the single generic "Existing
+    // context" example and "Removed by this PR" — NOT one per category.
     const dashedSwatches = withLegend.match(/stroke-dasharray="3 2"/g) ?? [];
-    expect(dashedSwatches.length).toBeGreaterThanOrEqual(4); // one per changed/context category row
+    expect(dashedSwatches.length).toBe(2);
+    // 4 categories + "Existing context" + "Removed by this PR" = 6 total
+    // swatch <rect>s on the legend, down from 9 in the round-3 design.
+    const totalSwatches = withLegend.match(/<rect x="[\d.]+" y="[\d.]+" width="12" height="12"/g) ?? [];
+    expect(totalSwatches.length).toBe(6);
   });
 
   it("draws a visible top border on the legend strip, not loose floating text", () => {
@@ -459,6 +464,7 @@ describe("appendLegend", () => {
     expect(withLegend).toContain("Logic");
     expect(withLegend).toContain("Datastore");
     expect(withLegend).toContain("External");
+    expect(withLegend).toContain("Existing context");
     expect(withLegend).toContain("Removed by this PR");
     expect(legendRowCount(withLegend, 200)).toBeGreaterThan(1);
   });

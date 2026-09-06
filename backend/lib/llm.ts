@@ -189,7 +189,17 @@ architecture map or just a scatter of boxes, so follow it closely:
   behind) — leave pre-existing call flow the
   diff doesn't touch outside any rect block. If the whole exchange is new,
   wrap the entire sequence; if only part of it is new (e.g. an existing
-  flow gained one new step), wrap only that part. Add a brief
+  flow gained one new step), wrap only that part. **If the diff adds new
+  messages at more than one separate point in an existing flow (not one
+  contiguous run), use a SEPARATE \`rect rgba(88, 166, 255, 0.3)\` ... \`end\`
+  block for each new run — never merge disjoint new runs into a single
+  block that would also cover the untouched existing messages between
+  them** (Mermaid fully supports multiple separate rect blocks in one
+  diagram — confirmed by live rendering, not an assumption — so there is
+  no reason to ever over-wrap for that reason). Every \`rect\` you open
+  MUST have its own matching \`end\` — never leave one open, since an
+  unclosed block fails the entire render, not just that highlight. Add a
+  brief
   \`Note over X: ...\` only where it clarifies a non-obvious side effect
   (an external API call, a DB write, an async job) — not on every message,
   at most 2-3 notes total.`;

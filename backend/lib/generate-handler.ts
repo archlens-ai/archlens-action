@@ -9,6 +9,7 @@ import {
   groupUngroupedExternalNodes,
   annotatePublishSubscribeEdges,
   sanitizeEdgeLabelQuotes,
+  closeUnclosedSequenceBlocks,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
@@ -130,6 +131,20 @@ export async function handleGenerateRequest(
     // doesn't catch. Runs first, before anything else touches the source,
     // since a syntax-breaking issue should never survive to any later step.
     mermaidSource = sanitizeEdgeLabelQuotes(mermaidSource);
+
+    // Deterministic backstop, round-14 finding: investigating a round-12
+    // review complaint about disjoint multi-segment sequence highlighting
+    // found (via live testing, see diff-classify.ts's own docstring on this
+    // function) that the actual real risk wasn't disjoint highlighting
+    // itself -- it already works -- but that asking the model to emit more
+    // separate rect blocks per diagram means more open/close pairs it has
+    // to track, and a single unclosed `rect`/`loop`/`alt`/`opt`/`par`/
+    // `critical`/`break` block breaks the ENTIRE render (confirmed via a
+    // real reproduced parse error), a failure validateMermaidSyntax's cheap
+    // regex check doesn't catch. Runs early, alongside the other syntax-
+    // safety backstop above, since a parse-breaking issue should never
+    // survive to any later step. A no-op for flowchart.
+    mermaidSource = closeUnclosedSequenceBlocks(mermaidSource);
 
     // Deterministic override, not another LLM-trusting step: recompute
     // changed/Context/removed from the diff's own +/- lines rather than

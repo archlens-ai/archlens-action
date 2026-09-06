@@ -1709,3 +1709,88 @@ was scoped to fixing the specific, concrete defect item 25 found, not to
 re-running the review loop. The previously-planned next steps (legend
 simplification, multi-segment sequence highlighting) and the animation
 decision remain open, Anurag's call on sequencing.
+
+## 27. Legend simplified (9 → 6 swatches) and the multi-segment sequence highlighting gap investigated and found to already be mostly-solved (2026-09-06)
+
+Anurag's instruction after item 26: "move it" — proceed with the two
+items item 26 left as "next in line": legend simplification and
+multi-segment sequence-diagram highlighting.
+
+**Legend simplification.** The round-3/round-6 legend design cost 9
+total swatches (4 categories × {solid, dashed} + 1 "Removed by this PR")
+to teach only 5 distinct facts, since the solid/dashed pairing is
+*identical* across every category — showing that pairing 4 separate
+times taught the same thing 4 times, not 4 different things, and this
+"high legend/decoding overhead" complaint had been raised and never
+fixed since round 12. Fixed by cutting each category down to its single
+solid swatch (the color alone identifies the category) and teaching the
+dashed pattern exactly once via one new, neutral-gray "Existing context"
+item — 6 total swatches, zero information lost (`LEGEND_ITEMS` and
+`appendLegend`'s doc comments in `backend/lib/mermaid.ts`). Verified: the
+existing `appendLegend` test suite updated to assert exactly 6 total
+swatch `<rect>`s and exactly 2 dashed ones (down from an unbounded-lower-
+bound assertion of "4+"), full suite green, and a real render +
+screenshot (`backend/scripts/legend-check.ts`, kept as a standing visual
+regression check) confirmed the new footer reads cleanly.
+
+**Multi-segment sequence highlighting** — the actual finding here is the
+more important one, and it cuts against the assumption item 25/round-12
+carried forward. Round 12's review said a PR that adds new calls at two
+disjoint points in an existing flow "can't be highlighted accurately" —
+read at the time as implying a real Mermaid architectural ceiling (its
+`rect...end` block can only mark one contiguous range). Rather than
+build a workaround for that assumption, it was tested empirically first:
+
+1. `backend/scripts/rect-edge-cases.ts` (kept as a standing contract
+   check on Mermaid's own behavior) confirmed live that Mermaid **does**
+   support multiple separate, even directly-adjacent, `rect rgba(...)
+   ...end` blocks in one diagram — there is no real ceiling here at all.
+2. `scripts/dry-run-live-sequence-disjoint.ts` (kept as a standing
+   regression script) then tested the *actual production prompt* against
+   the *actual production model* (claude-haiku-4-5 — the tier every
+   single-file diff runs on, not the escalated sonnet-5 tier) with a real
+   diff shaped exactly like the round-12 complaint: two separate git
+   hunks in one file, each a single new call, with untouched existing
+   calls between and around them. Run 3 times (once with 2 disjoint new
+   calls twice, once with 3), the model produced one correctly-scoped
+   separate `rect` block per new call **every time**, correctly leaving
+   the untouched calls between them un-highlighted — confirmed both in
+   the generated source and visually via a real screenshot.
+
+So the round-12 finding did not reproduce: this was never a real
+architectural gap in the current prompt/model, just an assumption that
+had never actually been tested against live behavior. Brutal-honesty
+note to self as much as to Anurag: it would have been easy to "fix" this
+by building unnecessary machinery for a problem that doesn't exist —
+the discipline of testing before building is what caught that here.
+
+What live testing *did* surface as a genuinely real, adjacent risk:
+asking the model to emit more separate `rect` blocks per diagram means
+more open/close pairs to track, and a hand-constructed test
+(`rect-edge-cases.ts`) proved that a single **unclosed** block of *any*
+kind (`rect`/`loop`/`alt`/`opt`/`par`/`critical`/`break` — not just
+`rect`) breaks the *entire* render with a hard Mermaid parse error,
+which `validateMermaidSyntax`'s cheap regex check does not catch — the
+same shape of gap as item 26's quote-in-edge-label bug. Fixed two ways,
+same pattern as every other round: (a) `llm.ts`'s SYSTEM_PROMPT now
+explicitly states the multi-block case (rather than leaving it to the
+model to keep inferring correctly) and explicitly warns every `rect`
+needs its own matching `end`; (b) a new deterministic backstop,
+`closeUnclosedSequenceBlocks` (`backend/lib/diff-classify.ts`), walks a
+generated sequence diagram's block-open/close depth and appends any
+missing `end` line(s) at the end of the source rather than letting an
+incomplete diagram fail to render at all — wired into
+`generate-handler.ts` right alongside `sanitizeEdgeLabelQuotes`, since
+both are syntax-safety nets that must run before anything else touches
+the source. 198 backend tests (7 new for `closeUnclosedSequenceBlocks`),
+full suite green, `tsc --noEmit` clean on both workspaces, re-verified
+live post-change (the disjoint-segment script still produces correct
+output with the updated prompt) with no regression on the existing
+flowchart/pub-sub live scripts either.
+
+**Status toward the score >= 9 gate**: unchanged, not re-scored. Both
+items from the item-26 punch list are now done; no other work is
+pending from that list except a possible future re-run of the
+adversarial review loop itself (Anurag's call), and the payment/billing
+work stays gated on that score reaching >= 9, per the standing
+instruction.

@@ -9,6 +9,7 @@ import {
   groupUngroupedExternalNodes,
   annotatePublishSubscribeEdges,
   sanitizeEdgeLabelQuotes,
+  closeUnclosedSequenceBlocks,
   type DiffPatchFile,
 } from "../lib/diff-classify.js";
 
@@ -923,5 +924,92 @@ describe("sanitizeEdgeLabelQuotes", () => {
   it("is a no-op for sequenceDiagram", () => {
     const source = 'sequenceDiagram\n  A->>B: publishes "order.created"';
     expect(sanitizeEdgeLabelQuotes(source)).toBe(source);
+  });
+});
+
+describe("closeUnclosedSequenceBlocks", () => {
+  it("returns an already-balanced diagram unchanged", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant A",
+      "  participant B",
+      "  A->>B: call 1",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  A->>B: call 2",
+      "  end",
+      "  A->>B: call 3",
+    ].join("\n");
+    expect(closeUnclosedSequenceBlocks(source)).toBe(source);
+  });
+
+  it("appends a missing end for a single unclosed rect block", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant A",
+      "  participant B",
+      "  A->>B: call 1",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  A->>B: call 2 (new)",
+    ].join("\n");
+    const result = closeUnclosedSequenceBlocks(source);
+    expect(result).toBe(`${source}\nend\n`);
+  });
+
+  it("appends multiple missing ends, one per still-open block, in the real shape that broke rendering (round-14 live finding)", () => {
+    // Mirrors scripts/rect-edge-cases.ts's "unclosed rect" reproduction,
+    // which produced a real Mermaid parse error when rendered unpatched.
+    const source = [
+      "sequenceDiagram",
+      "  participant A",
+      "  participant B",
+      "  A->>B: call 1",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  A->>B: call 2 (new)",
+      "  A->>B: call 3 (should not be highlighted, but rect never closed)",
+    ].join("\n");
+    const result = closeUnclosedSequenceBlocks(source);
+    expect(result).toBe(`${source}\nend\n`);
+    expect(result.trim().split("\n").filter((l) => l.trim() === "end").length).toBe(1);
+  });
+
+  it("closes multiple distinct unclosed blocks (rect left open, then alt left open) with one end each", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant A",
+      "  participant B",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  A->>B: call 1",
+      "  alt some condition",
+      "  A->>B: call 2",
+    ].join("\n");
+    const result = closeUnclosedSequenceBlocks(source);
+    const trailingEnds = result.slice(source.length);
+    expect(trailingEnds.trim().split("\n")).toEqual(["end", "end"]);
+  });
+
+  it("does not touch a correctly nested and fully closed alt/rect combination", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant A",
+      "  participant B",
+      "  rect rgba(88, 166, 255, 0.3)",
+      "  alt success",
+      "  A->>B: ok",
+      "  else failure",
+      "  A->>B: error",
+      "  end",
+      "  end",
+    ].join("\n");
+    expect(closeUnclosedSequenceBlocks(source)).toBe(source);
+  });
+
+  it("is a no-op for flowchart, where this block syntax doesn't apply", () => {
+    const source = ['flowchart TD', '  A["a"] --> B["b"]'].join("\n");
+    expect(closeUnclosedSequenceBlocks(source)).toBe(source);
+  });
+
+  it("is a no-op when there are no block-opening keywords at all", () => {
+    const source = ["sequenceDiagram", "  participant A", "  participant B", "  A->>B: hello"].join("\n");
+    expect(closeUnclosedSequenceBlocks(source)).toBe(source);
   });
 });

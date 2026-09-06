@@ -965,6 +965,69 @@ const SEQUENCE_PARTICIPANT_RE = /^\s*(?:actor|participant)\s+(\w+)/;
 const SEQUENCE_NOTE_RE = /^\s*Note\s+(?:over|left of|right of)\b/i;
 
 /**
+ * Round-14 investigation, prompted by a round-12 review complaint that a PR
+ * adding new calls at two DISJOINT points in an existing sequence flow
+ * "can't be highlighted accurately" -- before assuming that meant a deeper
+ * architectural rework, this was tested empirically rather than assumed:
+ * (1) scripts/rect-edge-cases.ts confirmed live that Mermaid itself renders
+ * multiple separate, even directly-adjacent, `rect rgba(...)...end` blocks
+ * correctly -- there is no real Mermaid ceiling here; and (2) three live
+ * calls against the actual production model (claude-haiku-4-5, the tier
+ * every single-file diff actually runs on) via
+ * scripts/dry-run-live-sequence-disjoint(3).ts showed the EXISTING prompt
+ * already produces one separate rect block per disjoint new run, unprompted
+ * by any special multi-block instruction. So the round-12 complaint did not
+ * reproduce, and this is NOT the fix for that -- llm.ts's SYSTEM_PROMPT was
+ * still tightened to state the multi-block case explicitly rather than
+ * leave it to the model to keep inferring correctly by luck.
+ *
+ * What live testing surfaced INSTEAD, as a genuinely real risk in this same
+ * area: asking the model to emit MORE separate rect blocks per diagram
+ * means more open/close pairs it has to keep track of, and
+ * scripts/rect-edge-cases.ts also proved that a single unclosed block of
+ * ANY kind (`rect`/`loop`/`alt`/`opt`/`par`/`critical`/`break`) -- not just
+ * `rect` -- breaks the ENTIRE render with a hard Mermaid parse error, which
+ * validateMermaidSyntax's cheap regex check does not catch (same shape of
+ * gap as the round-13 quote-in-edge-label bug). This is the deterministic
+ * backstop for that real, reproduced failure mode: walks every line
+ * tracking block-open/close depth (reusing the same SEQUENCE_BLOCK_OPEN_RE/
+ * SEQUENCE_BLOCK_END_RE grammar as annotateFullyNewSequence below) and, if
+ * the diagram ends with anything still open, appends the missing `end`
+ * line(s) rather than letting a well-intentioned but incomplete diagram
+ * fail to render at all. A no-op for flowchart and for any already-balanced
+ * sequence diagram (the overwhelmingly common case).
+ *
+ * Deliberately conservative about WHERE it closes things: it only acts at
+ * end-of-source, appending whatever `end`s are still owed. It does not try
+ * to guess where in the middle of the diagram a missing `end` was meant to
+ * go -- a genuinely misplaced (rather than simply omitted) `end` is a
+ * different, rarer failure this doesn't attempt to fix.
+ */
+export function closeUnclosedSequenceBlocks(source: string): string {
+  const isSequence = /^sequenceDiagram\b/i.test(source.trim());
+  if (!isSequence) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+  let openDepth = 0;
+  for (const line of lines) {
+    if (SEQUENCE_BLOCK_END_RE.test(line)) {
+      if (openDepth > 0) openDepth--;
+    } else if (SEQUENCE_BLOCK_OPEN_RE.test(line)) {
+      openDepth++;
+    }
+  }
+
+  if (openDepth <= 0) {
+    return source; // already balanced -- the overwhelmingly common case
+  }
+
+  const closes = Array.from({ length: openDepth }, () => "end").join("\n");
+  return `${source.trimEnd()}\n${closes}\n`;
+}
+
+/**
  * Round-11 finding, from a fresh adversarial review: when an ENTIRE
  * sequenceDiagram is new (the whole flow is one PR-introduced exchange,
  * not an existing flow gaining one step), the SYSTEM_PROMPT's own
