@@ -1794,3 +1794,93 @@ pending from that list except a possible future re-run of the
 adversarial review loop itself (Anurag's call), and the payment/billing
 work stays gated on that score reaching >= 9, per the standing
 instruction.
+
+## 28. Missing-inventory-node gap fixed; animation dropped as the default; moving toward re-scoring (2026-09-07)
+
+Anurag's instruction: "i want to release it fast so if you can just fix
+things and make it ready for commercial use it would be better, but
+still quality wise no compromise." Flagged directly rather than silently
+acting on it: "fast" and Anurag's own standing gate ("no payment
+integration until the score reaches >=9") are in tension — the gate
+stays in force unless Anurag says otherwise. Two calls made to keep
+moving without blocking on more back-and-forth:
+
+**Animation: dropped as the default**, not just left undecided. Both
+SMIL and CSS motion are confirmed dead in a real GitHub `<img>` embed
+(items 23-24) — the only place a real customer ever sees this diagram —
+so `renderMermaidToSvg`'s `flowAnimation` option now defaults to `"none"`
+instead of `"smil"` (`backend/lib/mermaid.ts`). This isn't just "no
+regression from removing an unused feature": leaving either runner wired
+in by default meant every production diagram carried a small glowing
+arrowhead frozen at whatever position its dead animation timeline
+happened to reach — not a designed resting state, a genuinely confusing
+static artifact sitting on top of an otherwise clean edge, for zero
+visible benefit in the one context that matters. Both implementations
+stay fully implemented and selectable (`flowAnimation: "smil" | "css"`)
+for the case where the raw SVG is opened directly rather than viewed
+through the embed — this is a default change, not a removal, so a future
+decision to revisit animation (a different embed strategy, an animated
+raster export) doesn't start from scratch. Verified: a new test asserts
+the production-shaped call (no `flowAnimation` passed, exactly how
+`api/generate.ts` calls this) contains neither `<animateMotion>` nor the
+CSS runner class, while bold/glow styling is unaffected; the two existing
+tests that asserted the runner by default were updated to opt in
+explicitly, so the capability itself stays tested. Confirmed live: a
+fresh render of the 10-file scale diff has zero `animateMotion`/
+`archlens-flow-runner` occurrences and screenshots clean.
+
+**Missing-inventory-node gap fixed** — the one concrete, disclosed defect
+still open from the head-to-head validation (item 25): on the real
+10-file scale diff, `InventoryService`'s own genuine write
+(`db.inventory.decrement(...)`) never appeared anywhere in the diagram —
+the model correctly drew the write edge, but the shared datastore node's
+label only ever said "orders / refunds tables," silently omitting the
+one table this PR's own new code actually touches. Two-part fix, same
+established pattern:
+
+1. `llm.ts`'s COARSE MODE instruction now explicitly requires folding
+   every touched table into an existing datastore node's label rather
+   than ever dropping one to stay under the node cap, and says to merge/
+   drop service-layer granularity first if something has to give.
+2. This alone worked on the first live re-test, but a second live call
+   with the identical fixed prompt reproduced the same omission again —
+   1-for-2, the same "prompt alone isn't reliable enough" pattern behind
+   every other backstop in this project. `reconcileDatastoreNodeLabels`
+   (new, `backend/lib/diff-classify.ts`) is the deterministic backstop:
+   for every edge from a non-datastore node into a datastore node whose
+   label reads as a write (writes/creates/updates/deletes/inserts/
+   persists/stores/saves/modifies/decrements/increments/mutates — the
+   last three added after a live call used "decrements," a reminder this
+   list can't be assumed exhaustive from reasoning alone), it derives a
+   keyword from the WRITING node's own name (reusing this file's existing
+   `tokenize()`/`ARCHITECTURAL_SUFFIX_WORDS` logic — "InventoryService" ->
+   "inventory," picking the shortest surviving token) and appends it to
+   the datastore node's own label if missing. Deliberately conservative:
+   unlike every other backstop in this file, this is the first one that
+   COULD have fabricated new graph structure (a whole new node/edge) —
+   instead it only ever reconciles an existing datastore node's label
+   text against write-relationships the model already drew, since wrong
+   invented structure is worse than an omission.
+
+Verified against 3 real live Anthropic calls (production model,
+`claude-haiku-4-5`), not just unit tests: the fix (prompt + backstop
+together) produced the correct merged "orders / refunds / inventory
+tables" label all 3 times, including one run where the model used a
+different verb ("decrements") that the first version of the backstop's
+verb list didn't recognize — caught live, fixed immediately (added
+decrements/increments/mutates to the list) rather than shipped with a
+known-narrow verb list. 9 new tests (198 -> 209 backend tests, `tsc
+--noEmit` clean on both workspaces), and a final live render +
+screenshot confirms the shared datastore node correctly reads "orders /
+refunds / inventory tables" with no stray animation artifacts anywhere
+in the diagram.
+
+**Status toward the score >= 9 gate**: every concretely disclosed defect
+from the head-to-head validation (item 25) and round 12 is now closed —
+edge-conflation (item 26), legend decoding overhead and multi-segment
+highlighting (item 27), the missing-inventory-node gap and the
+animation-artifact question (this item). The next step is re-scoring:
+enough real, verified fixes have landed since the last scored round
+(3/10, round 12) that continuing to act on a 6-item-old score number
+stops being the disciplined choice. A fresh round-13 adversarial review
+is queued next.

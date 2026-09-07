@@ -816,6 +816,152 @@ export function annotatePublishSubscribeEdges(source: string): string {
   return outLines.join("\n");
 }
 
+// Verbs a "this node writes to this table" edge label uses. Deliberately
+// broader than just "writes" -- the model has used "creates"/"updates" for
+// the same relationship on different diffs, and all of them carry the same
+// "this is a real write into this datastore" signal this backstop needs.
+// "decrements" was added after a live call labeled InventoryService's own
+// stock-adjustment edge that way instead of "writes" -- a reminder this
+// list can't be assumed exhaustive from reasoning alone, only from what
+// real model output actually says.
+const DATASTORE_WRITE_LABEL_RE =
+  /\b(?:writes?|creates?|updates?|deletes?|inserts?|persists?|stores?|saves?|modifies|decrements?|increments?|mutates?)\b/i;
+
+/**
+ * Round-14 finding (2026-09-07), from the head-to-head validation's
+ * disclosed-but-unfixed "missing datastore node" gap: on the real 10-file
+ * scale diff, `InventoryService`'s own genuine write
+ * (`db.inventory.decrement(...)`) never showed up anywhere in the
+ * diagram -- the model correctly drew `InventoryService -->|writes|
+ * Tables`, but the shared `Tables` node's own label only ever said
+ * "orders / refunds tables," silently omitting the one table this specific
+ * PR's new code actually touches. A reviewer scanning the diagram would
+ * reasonably conclude this PR never touches inventory data at all -- a
+ * real, misleading omission, not a cosmetic one.
+ *
+ * A SYSTEM_PROMPT fix (llm.ts's COARSE MODE instruction, which now
+ * explicitly requires folding every touched table into an existing
+ * datastore node's label rather than dropping any) got this right on the
+ * very first live call after the fix landed -- but a SECOND live call with
+ * the identical fixed prompt reproduced the exact same omission again (the
+ * merged label reverted to "orders / refunds tables," missing "inventory,"
+ * even though the `InventoryService -->|writes| Tables` edge was still
+ * correctly drawn). n=2, but 1-for-2 is exactly the "prompt alone isn't
+ * reliable enough" pattern this project has hit on every other behavior it
+ * ever tried to enforce by instruction only -- so, same established
+ * pattern as every other fix in this file, here is the deterministic
+ * backstop.
+ *
+ * Deliberately conservative about what it does: it never invents a new
+ * node or a new edge (unlike every other backstop in this file, which only
+ * ever restyles/reclassifies/annotates structure the model ALREADY drew,
+ * this would be the first to fabricate new graph structure, which is a
+ * meaningfully higher-risk kind of guess -- wrong invented structure is
+ * worse than an omission). Instead it only ever RECONCILES an existing
+ * datastore node's own label text against write-relationships the model
+ * already drew: for every edge from a non-datastore node to a
+ * datastore/datastoreContext node whose label reads as a write (writes/
+ * creates/updates/deletes/inserts/persists/stores/saves/modifies), it
+ * derives a keyword from the WRITING node's own name (reusing this same
+ * file's tokenize()/ARCHITECTURAL_SUFFIX_WORDS logic --
+ * "InventoryService" -> "inventory" -- picking the shortest surviving
+ * token, since a compound whole-word blob like "orderscontroller" is
+ * always the least specific candidate) and appends it to the datastore
+ * node's own label if no form of it is already present there. Inserts
+ * before a trailing "table"/"tables" word when the label has one (matching
+ * this product's own "X / Y tables" convention, so "orders / refunds
+ * tables" + "inventory" becomes "orders / refunds / inventory tables," not
+ * "orders / refunds tables / inventory"); otherwise appends plainly. A
+ * no-op for sequenceDiagram (no datastore-category concept there) and for
+ * any diagram where every write-edge's target label already mentions its
+ * writer's derived keyword -- the common case once the prompt fix lands
+ * correctly on its own.
+ */
+export function reconcileDatastoreNodeLabels(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+  const nodeLabelRe = /^(\s*)(\w+)\[(\(?)"([^"]*)"(\)?)\]\s*$/;
+
+  const categoryOf = new Map<string, string>();
+  for (const line of lines) {
+    const m = CLASS_LINE_RE.exec(line);
+    if (!m) continue;
+    const base = baseCategoryOf(m[3]!);
+    if (!base) continue;
+    for (const id of m[2]!.split(",").map((s) => s.trim()).filter(Boolean)) {
+      categoryOf.set(id, base);
+    }
+  }
+
+  const labelOf = new Map<string, string>();
+  for (const line of lines) {
+    const m = nodeLabelRe.exec(line);
+    if (m) labelOf.set(m[2]!, m[4]!);
+  }
+
+  const missingByTarget = new Map<string, Set<string>>();
+  for (const line of lines) {
+    const m = EVENT_EDGE_RE.exec(line);
+    if (!m) continue;
+    const sourceId = m[2]!;
+    const label = m[5];
+    const targetId = m[6]!;
+    if (!label || !DATASTORE_WRITE_LABEL_RE.test(label)) continue;
+    if (categoryOf.get(targetId) !== "datastore") continue;
+    if (categoryOf.get(sourceId) === "datastore") continue;
+
+    const keyword = deriveTableKeyword(sourceId, labelOf.get(sourceId));
+    if (!keyword) continue;
+    const targetLabel = labelOf.get(targetId);
+    if (targetLabel === undefined || labelAlreadyMentions(targetLabel, keyword)) continue;
+
+    if (!missingByTarget.has(targetId)) missingByTarget.set(targetId, new Set());
+    missingByTarget.get(targetId)!.add(keyword);
+  }
+
+  if (missingByTarget.size === 0) {
+    return source;
+  }
+
+  return lines
+    .map((line) => {
+      const m = nodeLabelRe.exec(line);
+      if (!m) return line;
+      const id = m[2]!;
+      const missing = missingByTarget.get(id);
+      if (!missing || missing.size === 0) return line;
+      const [, indent, , openParen, label, closeParen] = m;
+      const newLabel = insertKeywordsIntoLabel(label!, [...missing]);
+      return `${indent}${id}[${openParen}"${newLabel}"${closeParen}]`;
+    })
+    .join("\n");
+}
+
+function deriveTableKeyword(nodeId: string, label: string | undefined): string | null {
+  const primary = (label ?? nodeId).split(/\s*\+\s*/)[0] ?? (label ?? nodeId);
+  const candidates = tokenize(primary).filter((t) => t.length >= 3);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((shortest, t) => (t.length < shortest.length ? t : shortest));
+}
+
+function labelAlreadyMentions(label: string, keyword: string): boolean {
+  const labelTokens = tokenize(label);
+  return labelTokens.some((t) => t.includes(keyword) || keyword.includes(t));
+}
+
+function insertKeywordsIntoLabel(label: string, keywords: string[]): string {
+  const additions = keywords.join(" / ");
+  const trailingTableWord = /^(.*?)(\s+tables?)$/i.exec(label);
+  if (trailingTableWord) {
+    return `${trailingTableWord[1]} / ${additions}${trailingTableWord[2]}`;
+  }
+  return `${label} / ${additions}`;
+}
+
 /**
  * Round-13 finding, found running the actual live Anthropic API against the
  * real 10-file scale diff to verify the SYSTEM_PROMPT change above (llm.ts):

@@ -552,16 +552,40 @@ describe("renderMermaidToSvg (integration)", () => {
   // through mmdc, not just the string-manipulation unit tests above. Round
   // 6 corrected the animation mechanism after the user pointed out the
   // first version (a dashed line) looked "dotted," not a solid line with
-  // an arrow running along it.
-  it("renders a real solid (non-dashed) edge with a moving arrow runner, end to end", async () => {
+  // an arrow running along it. Round-14 (2026-09-07): the runner is no
+  // longer the DEFAULT (see the no-op test below and CLAUDE.md item 28),
+  // so this now opts in explicitly to confirm the capability itself still
+  // works end to end, same as before.
+  it("renders a real solid (non-dashed) edge with a moving arrow runner when explicitly requested", async () => {
     const { svg } = await renderMermaidToSvg(
       'flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint\n  class B logic',
-      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH, flowAnimation: "smil" }
     );
     expect(svg).toContain("<animateMotion"); // the moving arrowhead, not a dashed line
     expect(svg).toContain("stroke-dasharray:none !important"); // edges stay solid
     expect(svg).toContain("archlens-glow");
     expect(svg).toContain("font-weight:700");
+  }, 30_000);
+
+  // Round-14 (2026-09-07): both real GitHub PR tests (items 23-24) found
+  // neither SMIL nor CSS motion survives GitHub's actual `<img>`-embedded
+  // PR comment — the only place a real customer sees this — so shipping
+  // either one by default meant every production diagram carried a dead,
+  // frozen runner artifact for zero visible benefit. Confirms the
+  // production default (no flowAnimation option passed, exactly how
+  // api/generate.ts calls this) no longer attaches either implementation,
+  // while the bold/glow styling itself (the part that DOES survive the
+  // embed, per the same two real-PR tests) is unaffected.
+  it("does not attach any flow-runner animation by default, since neither survives a real GitHub `<img>` embed", async () => {
+    const { svg } = await renderMermaidToSvg(
+      'flowchart TD\n  A["x"] --> B["y"]\n  class A endpoint\n  class B logic',
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+    );
+    expect(svg).not.toContain("<animateMotion");
+    expect(svg).not.toContain("archlens-flow-runner");
+    expect(svg).not.toContain("@keyframes archlens-flow");
+    expect(svg).toContain("stroke-dasharray:none !important"); // edges still render bold/solid
+    expect(svg).toContain("archlens-glow"); // the glow itself is unaffected, only the runner is gone
   }, 30_000);
 
   // Bug fix (2026-09-02), end-to-end through the real Puppeteer/ELK harness:
@@ -579,7 +603,7 @@ describe("renderMermaidToSvg (integration)", () => {
   it("renders any edge touching a removed node as dim/dashed/no-glow with no animated runner, while a fully-live edge keeps the active look", async () => {
     const { svg } = await renderMermaidToSvg(
       'flowchart TD\n  A["gone service"] --> B["gone dependency"]\n  E["live caller"] --> B\n  C["kept service"] --> D["kept dependency"]\n  class A,B removed\n  class C,D,E logic',
-      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH }
+      { executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH, flowAnimation: "smil" }
     );
     const removedEdge = /<path[^>]*data-id="L_A_B_0"[^>]*>/.exec(svg)?.[0];
     const liveIntoRemovedEdge = /<path[^>]*data-id="L_E_B_0"[^>]*>/.exec(svg)?.[0];

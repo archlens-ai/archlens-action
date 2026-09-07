@@ -1032,13 +1032,29 @@ export async function renderMermaidToSvg(
     /**
      * Which flow-runner implementation to use for the animated-glow
      * arrowhead (see injectFlowRunners() vs injectFlowRunnersCss() above).
-     * Defaults to "smil" (the existing, production behavior, unchanged) —
-     * "css" is an unverified candidate fix for the real-GitHub-PR finding
-     * in CLAUDE.md item 23 (SMIL doesn't play in a real `<img>` embed) and
-     * should only be selected once/while validating that fix, not made
-     * the default until a real-PR test confirms it actually works.
+     *
+     * Defaults to "none" (2026-09-07 — see CLAUDE.md item 28). Both real
+     * GitHub PR tests (items 23-24) confirmed neither SMIL nor CSS motion
+     * survives GitHub's actual `<img>`-embedded PR comment — the ONLY
+     * place a real customer ever sees this diagram — so leaving either
+     * one wired in by default meant shipping dead, frozen decoration:
+     * `injectFlowRunners()`'s arrowhead sits at whatever position its
+     * SMIL timeline happened to reach before the embed context froze it,
+     * which is not a designed resting position and reads as a stray,
+     * confusing artifact rather than the polish it was meant to add — and
+     * that's on top of the extra render weight/complexity of computing
+     * and attaching a runner element per edge for an effect nobody will
+     * ever see move. "none" skips the whole step: plain bold/glow edges,
+     * no runner element attached at all, which is what genuinely renders
+     * best in the one context that matters. "smil"/"css" remain fully
+     * implemented and selectable — e.g. for someone who opens the raw SVG
+     * URL directly rather than viewing it through the PR-comment `<img>`
+     * embed, where the motion DOES still play — this is a default change,
+     * not a removal, so a future decision to re-enable animation (a
+     * different embed strategy, an animated raster export) doesn't need
+     * to rebuild either implementation from scratch.
      */
-    flowAnimation?: "smil" | "css";
+    flowAnimation?: "smil" | "css" | "none";
   } = {}
 ): Promise<RenderResult> {
   const validation = validateMermaidSyntax(source);
@@ -1127,9 +1143,9 @@ export async function renderMermaidToSvg(
       : withBackground.replace(/^<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
 
     const styled = applyBoldGlowStyling(withXlinkNs);
-    const flowAnimation = opts.flowAnimation ?? "smil";
+    const flowAnimation = opts.flowAnimation ?? "none";
     const withRunners =
-      diagramType === "flowchart"
+      diagramType === "flowchart" && flowAnimation !== "none"
         ? flowAnimation === "css"
           ? injectFlowRunnersCss(styled)
           : injectFlowRunners(styled)

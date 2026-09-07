@@ -10,6 +10,7 @@ import {
   annotatePublishSubscribeEdges,
   sanitizeEdgeLabelQuotes,
   closeUnclosedSequenceBlocks,
+  reconcileDatastoreNodeLabels,
   type DiffPatchFile,
 } from "../lib/diff-classify.js";
 
@@ -1011,5 +1012,134 @@ describe("closeUnclosedSequenceBlocks", () => {
   it("is a no-op when there are no block-opening keywords at all", () => {
     const source = ["sequenceDiagram", "  participant A", "  participant B", "  A->>B: hello"].join("\n");
     expect(closeUnclosedSequenceBlocks(source)).toBe(source);
+  });
+});
+
+describe("reconcileDatastoreNodeLabels", () => {
+  // Mirrors the real round-14 shape: a live-model diagram correctly drew
+  // `InventoryService -->|writes| Tables` but the shared Tables node's own
+  // label only said "orders / refunds tables," silently omitting inventory.
+  function scaleDiagram(tablesLabel: string): string {
+    return [
+      "flowchart TD",
+      '  OrderService["OrderService"]',
+      '  InventoryService["InventoryService"]',
+      '  RefundService["RefundService"]',
+      `  Tables["${tablesLabel}"]`,
+      "class OrderService,InventoryService,RefundService logic",
+      "class Tables datastore",
+      "OrderService -->|writes| Tables",
+      "InventoryService -->|writes| Tables",
+      "RefundService -->|writes| Tables",
+    ].join("\n");
+  }
+
+  it("inserts a missing writer's keyword before a trailing 'tables' word", () => {
+    const source = scaleDiagram("orders / refunds tables");
+    const result = reconcileDatastoreNodeLabels(source);
+    expect(result).toContain('Tables["orders / refunds / inventory tables"]');
+  });
+
+  it("is idempotent -- does nothing when every writer's keyword is already present", () => {
+    const source = scaleDiagram("orders / refunds / inventory tables");
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+
+  it("recognizes the keyword even when the label uses the plural and the node name is singular", () => {
+    // OrderService -> "order"; label already says "orders" -- substring
+    // containment must treat these as the same table, not flag a false gap.
+    const source = [
+      "flowchart TD",
+      '  OrderService["OrderService"]',
+      '  Tables["orders tables"]',
+      "class OrderService logic",
+      "class Tables datastore",
+      "OrderService -->|writes| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+
+  it("falls back to a plain append when the label has no trailing 'table(s)' word", () => {
+    const source = [
+      "flowchart TD",
+      '  InventoryService["InventoryService"]',
+      '  DB["OrdersDB"]',
+      "class InventoryService logic",
+      "class DB datastore",
+      "InventoryService -->|writes| DB",
+    ].join("\n");
+    const result = reconcileDatastoreNodeLabels(source);
+    expect(result).toContain('DB["OrdersDB / inventory"]');
+  });
+
+  it("recognizes creates/updates/deletes as write verbs too, not only 'writes'", () => {
+    const source = [
+      "flowchart TD",
+      '  InventoryService["InventoryService"]',
+      '  Tables["orders tables"]',
+      "class InventoryService logic",
+      "class Tables datastore",
+      "InventoryService -->|creates| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toContain('Tables["orders / inventory tables"]');
+  });
+
+  // Real live-model finding (2026-09-07): a genuine call labeled
+  // InventoryService's own stock-adjustment edge "decrements" instead of
+  // "writes" -- a reminder the verb list can't be assumed exhaustive.
+  it("recognizes 'decrements' as a write verb too", () => {
+    const source = [
+      "flowchart TD",
+      '  InventoryService["InventoryService"]',
+      '  Tables["orders tables"]',
+      "class InventoryService logic",
+      "class Tables datastore",
+      "InventoryService -->|decrements| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toContain('Tables["orders / inventory tables"]');
+  });
+
+  it("does not touch a non-write edge into a datastore node (e.g. a mere reference)", () => {
+    const source = [
+      "flowchart TD",
+      '  InventoryService["InventoryService"]',
+      '  Tables["orders tables"]',
+      "class InventoryService logic",
+      "class Tables datastore",
+      "InventoryService -->|reads| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+
+  it("does not touch an edge between two datastore nodes", () => {
+    const source = [
+      "flowchart TD",
+      '  Archive["ArchiveTable"]',
+      '  Tables["orders tables"]',
+      "class Archive datastore",
+      "class Tables datastore",
+      "Archive -->|writes| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = "sequenceDiagram\n  A->>B: writes to inventory";
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+
+  it("merges multiple missing keywords onto the same target in one pass", () => {
+    const source = [
+      "flowchart TD",
+      '  InventoryService["InventoryService"]',
+      '  ShippingService["ShippingService"]',
+      '  Tables["orders tables"]',
+      "class InventoryService,ShippingService logic",
+      "class Tables datastore",
+      "InventoryService -->|writes| Tables",
+      "ShippingService -->|writes| Tables",
+    ].join("\n");
+    const result = reconcileDatastoreNodeLabels(source);
+    expect(result).toContain('"orders / inventory / shipping tables"');
   });
 });

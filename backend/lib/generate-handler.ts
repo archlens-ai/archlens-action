@@ -10,6 +10,7 @@ import {
   annotatePublishSubscribeEdges,
   sanitizeEdgeLabelQuotes,
   closeUnclosedSequenceBlocks,
+  reconcileDatastoreNodeLabels,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
@@ -196,6 +197,21 @@ export async function handleGenerateRequest(
     // `endpoint`, so a background worker rendered as if it were a real API
     // route. Catches any node left with no category whatsoever.
     mermaidSource = assignMissingCategories(mermaidSource);
+
+    // Deterministic backstop, round-14 finding: the head-to-head validation
+    // disclosed a real, unfixed gap where a genuinely-touched table
+    // (`InventoryService`'s own new `db.inventory.decrement(...)` write)
+    // never appeared anywhere in the diagram — the shared datastore node's
+    // label silently omitted it even though the write edge itself was drawn
+    // correctly. A SYSTEM_PROMPT fix (llm.ts) landed correctly on the first
+    // live re-test but reproduced the same omission again on a second live
+    // call with the identical prompt — the same "prompt alone isn't
+    // reliable enough" pattern behind every other backstop in this file.
+    // Reconciles a datastore node's own label text against write-edges the
+    // model already drew, rather than inventing new structure — see
+    // reconcileDatastoreNodeLabels's own docstring in diff-classify.ts for
+    // why that distinction matters here specifically.
+    mermaidSource = reconcileDatastoreNodeLabels(mermaidSource);
 
     // Deterministic backstop, round-12 finding: a fresh adversarial review
     // of a real generated diagram (live-scale stress test) flagged
