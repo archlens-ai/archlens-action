@@ -254,6 +254,17 @@ const LEGEND_ITEMS: LegendItem[] = [
 // actual character, not just more space characters.
 const LEGEND_CAPTION = "solid = changed by this PR  ·  dashed = existing context";
 
+// Round-13 adversarial review finding #9: sequence diagrams get ZERO
+// on-diagram explanation of what the blue-tinted `rect rgba(88, 166, 255,
+// 0.3)` band (see SYSTEM_PROMPT in llm.ts) or the "New flow added by this
+// PR" Note (annotateFullyNewSequence(), diff-classify.ts) actually mean —
+// a flowchart reviewer gets LEGEND_CAPTION spelling out solid/dashed, a
+// sequence-diagram reviewer gets nothing at all and has to infer the
+// convention from color alone. Exact rgba values matched to what the
+// SYSTEM_PROMPT actually instructs the model to emit, so this caption is
+// never describing a color the diagram doesn't use.
+const SEQUENCE_LEGEND_CAPTION = "blue highlight = new flow or steps added by this PR";
+
 /**
  * Applies ArchLens's fixed visual identity to already-validated Mermaid
  * source: strips any `classDef` the model emitted (untrusted styling; the
@@ -306,12 +317,18 @@ function estTextWidth(text: string, fontSize: number): number {
  * visual language as a subgraph box — not a separately-styled floating
  * element. Server-side post-processing (rather than asking the LLM to draw
  * it) means it's always present, always correct, and can never be
- * corrupted by model output. A no-op for sequenceDiagram, where this
- * category system doesn't apply.
+ * corrupted by model output.
+ *
+ * For sequenceDiagram (round-13 fix, see SEQUENCE_LEGEND_CAPTION's own
+ * comment), the category swatch system doesn't apply at all — there are no
+ * node categories, only the one blue diff-highlight convention — so this
+ * draws the same footer strip geometry (background, top border, padding)
+ * with a single caption-only row instead of building the full multi-item,
+ * wrapping layout the flowchart path below needs.
  */
 export function appendLegend(svg: string, diagramType: "flowchart" | "sequence"): string {
-  if (diagramType !== "flowchart") {
-    return svg;
+  if (diagramType === "sequence") {
+    return appendSequenceLegend(svg);
   }
 
   const viewBoxMatch = svg.match(/viewBox="([\d.\-]+) ([\d.\-]+) ([\d.\-]+) ([\d.\-]+)"/);
@@ -430,6 +447,56 @@ export function appendLegend(svg: string, diagramType: "flowchart" | "sequence")
     `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#161b22"/>` +
     `<line x1="0" y1="0" x2="${newWidth}" y2="0" stroke="#6e7681" stroke-width="1"/>` +
     rowsSvg +
+    `</g>`;
+
+  return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);
+}
+
+/**
+ * The sequenceDiagram counterpart to appendLegend()'s flowchart footer —
+ * see SEQUENCE_LEGEND_CAPTION's own comment for the round-13 finding this
+ * fixes. Deliberately minimal: one row, one centered caption, no swatches
+ * (sequence diagrams have no node-category system to explain) — just
+ * enough for a reviewer to know what the blue tint means without having to
+ * infer it from color alone. Shares appendLegend()'s viewBox/max-width
+ * resize approach since mermaid.render() emits the same root <svg> shape
+ * for both diagram types.
+ */
+function appendSequenceLegend(svg: string): string {
+  const viewBoxMatch = svg.match(/viewBox="([\d.\-]+) ([\d.\-]+) ([\d.\-]+) ([\d.\-]+)"/);
+  if (!viewBoxMatch) {
+    return svg; // Defensive: if mmdc's output shape ever changes, skip rather than corrupt the SVG.
+  }
+  const [, minX, minY, width, height] = viewBoxMatch.map(Number) as unknown as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+
+  const rowHeight = 26;
+  const fontSize = 12;
+  const outerPadding = 14;
+
+  const newWidth = Math.max(width, 320);
+  const legendHeight = rowHeight + outerPadding * 2;
+  const newHeight = height + legendHeight;
+
+  const resized = svg
+    .replace(
+      /viewBox="[\d.\-]+ [\d.\-]+ [\d.\-]+ [\d.\-]+"/,
+      `viewBox="${minX} ${minY} ${newWidth} ${newHeight}"`
+    )
+    .replace(/max-width:\s*[\d.]+px/, `max-width: ${newWidth}px`);
+
+  const captionText = `<text x="${newWidth / 2}" y="${outerPadding + rowHeight / 2}" text-anchor="middle" dominant-baseline="middle" font-family="${FONT_STACK}" font-size="${fontSize}" fill="#8b949e">${escapeXml(SEQUENCE_LEGEND_CAPTION)}</text>`;
+
+  const legendGroup =
+    `<g transform="translate(0, ${height})">` +
+    `<rect x="0" y="0" width="${newWidth}" height="${legendHeight}" fill="#161b22"/>` +
+    `<line x1="0" y1="0" x2="${newWidth}" y2="0" stroke="#6e7681" stroke-width="1"/>` +
+    captionText +
     `</g>`;
 
   return resized.replace(/<\/svg>\s*$/, `${legendGroup}</svg>`);

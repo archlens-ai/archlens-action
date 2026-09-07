@@ -525,8 +525,33 @@ describe("appendLegend", () => {
     expect(legendRowCount(withLegend, 200)).toBeGreaterThan(1);
   });
 
-  it("is a no-op for sequenceDiagram, where the category legend doesn't apply", () => {
-    expect(appendLegend(sampleSvg, "sequence")).toBe(sampleSvg);
+  // Round-13 adversarial review finding #9: sequenceDiagram used to get NO
+  // legend at all, so a reviewer had to infer what the blue diff-highlight
+  // tint meant purely from color, unlike a flowchart reviewer who gets
+  // LEGEND_CAPTION spelled out in words. This is the sequenceDiagram
+  // counterpart — a single-row caption footer, no category swatches (there
+  // is no node-category system in a sequence diagram to explain).
+  it("adds a single-row caption footer for sequenceDiagram, explaining the blue diff-highlight instead of leaving it unexplained", () => {
+    const withLegend = appendLegend(sampleSvg, "sequence");
+    expect(withLegend).toContain("blue highlight = new flow or steps added by this PR");
+    expect(withLegend).toContain('stroke="#6e7681"'); // same top-border treatment as the flowchart footer
+    expect(withLegend).toContain("</svg>");
+    // No category swatches -- this isn't the flowchart legend's layout.
+    expect(withLegend).not.toContain("Endpoint");
+    expect(withLegend).not.toContain('stroke-dasharray="3 2"');
+  });
+
+  it("grows the sequenceDiagram viewBox to fit the one-row caption footer, same as the flowchart legend does", () => {
+    const withLegend = appendLegend(sampleSvg, "sequence");
+    const match = withLegend.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+    expect(match).not.toBeNull();
+    expect(Number(match?.[1])).toBeGreaterThan(100);
+    expect(Number(match?.[2])).toBeGreaterThan(200);
+  });
+
+  it("leaves malformed sequenceDiagram SVG (no viewBox) untouched rather than corrupting it", () => {
+    const noViewBox = "<svg><rect/></svg>";
+    expect(appendLegend(noViewBox, "sequence")).toBe(noViewBox);
   });
 
   it("leaves malformed SVG (no viewBox) untouched rather than corrupting it", () => {
