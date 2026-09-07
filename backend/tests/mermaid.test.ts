@@ -6,6 +6,7 @@ import {
   injectFlowRunners,
   injectFlowRunnersCss,
   renderMermaidToSvg,
+  styleWarningEdgeLabels,
   validateMermaidSyntax,
 } from "../lib/mermaid.js";
 
@@ -376,6 +377,61 @@ describe("applyBoldGlowStyling", () => {
     const svg = labelRemovedSvg.replace("removed call to", "the tenacity dependency was removed");
     const result = applyBoldGlowStyling(svg);
     expect(result).not.toMatch(/id="my-svg-L_A_B_0"[^>]*class="[^"]*\barchlens-removed-edge\b/);
+  });
+});
+
+describe("styleWarningEdgeLabels", () => {
+  // Shape confirmed against a real rendered SVG (see the function's own
+  // docstring in mermaid.ts): an edge label is a `<g class="label"
+  // data-id="L_<source>_<target>_N">` wrapping a `<text style="...">`
+  // whose text content sits in one or more `<tspan>` children.
+  const svgWithWarning =
+    '<svg id="my-svg" viewBox="0 0 100 200">' +
+    '<g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(1,1)">' +
+    '<text style="">' +
+    '<tspan x="1" dy="0">writes to</tspan>' +
+    '<tspan x="1" dy="1em">⚠ no publisher found for this topic</tspan>' +
+    "</text></g></g>" +
+    '<g class="edgeLabel"><g class="label" data-id="L_C_D_0" transform="translate(2,2)">' +
+    '<text style=""><tspan x="2" dy="0">calls</tspan></text>' +
+    "</g></g>" +
+    "</svg>";
+
+  it("returns the SVG completely unchanged when no warning marker is present anywhere", () => {
+    const svgWithoutWarning = svgWithWarning.replace("⚠ no publisher found for this topic", "publishes event");
+    expect(styleWarningEdgeLabels(svgWithoutWarning)).toBe(svgWithoutWarning);
+  });
+
+  it("tags only the <text> element whose content contains the warning marker", () => {
+    const result = styleWarningEdgeLabels(svgWithWarning);
+    expect(result).toMatch(/<text[^>]*class="archlens-warning-label"[^>]*>[^<]*<tspan[^>]*>writes to/);
+    // The ordinary "calls" label must NOT be tagged.
+    expect(result).not.toMatch(/<text[^>]*class="archlens-warning-label"[^>]*><tspan[^>]*>calls/);
+  });
+
+  it("injects a single !important CSS rule recoloring the tagged class to amber", () => {
+    const result = styleWarningEdgeLabels(svgWithWarning);
+    const styleMatches = result.match(/<style>\.archlens-warning-label[^<]*<\/style>/g);
+    expect(styleMatches).toHaveLength(1);
+    expect(styleMatches?.[0]).toContain("fill:#d29922 !important");
+    // Placed once, right after the opening <svg> tag, not per-match.
+    expect(result.indexOf("<style>")).toBeLessThan(result.indexOf('data-id="L_A_B_0"'));
+  });
+
+  it("appends the warning class onto an existing class attribute rather than replacing it", () => {
+    const swapped = svgWithWarning.replace(
+      '<text style="">' + '<tspan x="1" dy="0">writes to</tspan>',
+      '<text style="" class="edgeLabel-text"><tspan x="1" dy="0">writes to</tspan>'
+    );
+    const result = styleWarningEdgeLabels(swapped);
+    expect(result).toMatch(/class="edgeLabel-text archlens-warning-label"/);
+  });
+
+  it("preserves the rest of the SVG content, including the untagged edge label", () => {
+    const result = styleWarningEdgeLabels(svgWithWarning);
+    expect(result).toContain('data-id="L_C_D_0"');
+    expect(result).toContain("<tspan x=\"2\" dy=\"0\">calls</tspan>");
+    expect(result).toContain("</svg>");
   });
 });
 

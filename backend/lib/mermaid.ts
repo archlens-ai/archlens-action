@@ -657,6 +657,62 @@ export function applyBoldGlowStyling(svg: string): string {
   return markedSvg.replace(/(<svg[^>]*>)/, `$1${GLOW_DEFS}${overrideStyle}`);
 }
 
+const WARNING_LABEL_CLASS = "archlens-warning-label";
+const WARNING_MARKER = "⚠";
+// Matches a whole rendered edge-label <text>...</text> block. Confirmed
+// against a real rendered SVG that an edge label's <text> element never
+// contains a nested <g> (only <tspan> children for word-wrapping), so a
+// simple non-greedy "up to the next </text>" match is reliable here —
+// unlike the <g>-nested markup applyBoldGlowStyling's other regexes have
+// to work around elsewhere in this file.
+const EDGE_LABEL_TEXT_RE = /<text([^>]*)>((?:(?!<\/text>)[\s\S])*)<\/text>/g;
+
+/**
+ * Round-14 finding, from a fresh adversarial review of real production
+ * output (not a hypothetical): the pub/sub "no publish edge shown"
+ * warning `annotatePublishSubscribeEdges()` (diff-classify.ts) appends —
+ * arguably the single most valuable insight this product's hygiene
+ * checks can surface — rendered in the exact same plain white,
+ * same-weight text as a routine "calls"/"writes" label, so a reviewer's
+ * eye has no visual reason to stop on it before reading every word.
+ * Recolors any rendered edge label whose text contains the "⚠" marker
+ * (the literal character both NO_PUBLISHER_SUFFIX and
+ * TOPIC_MISMATCH_SUFFIX in diff-classify.ts start with) to the same
+ * amber already used for the `external` category, so a genuine hygiene
+ * warning visually reads as "pay attention here" rather than blending
+ * into the diagram's ordinary edge vocabulary. Tags the label's own
+ * <text> element with a class and injects its own small `<style>` block
+ * (kept separate from applyBoldGlowStyling()'s stylesheet since this runs
+ * as a distinct post-processing pass) using the same `!important`-beats-
+ * specificity precaution as REMOVED_EDGE_CLASS above,
+ * learned the hard way from the round-13 CSS-cascade bug (see
+ * annotatePublishSubscribeEdges's own docstring). A no-op — returns the
+ * SVG completely unchanged — for the overwhelming majority of diagrams,
+ * which contain no pub/sub hygiene warning at all.
+ */
+export function styleWarningEdgeLabels(svg: string): string {
+  if (!svg.includes(WARNING_MARKER)) {
+    return svg;
+  }
+
+  const tagged = svg.replace(EDGE_LABEL_TEXT_RE, (full, attrs: string, inner: string) => {
+    if (!inner.includes(WARNING_MARKER)) {
+      return full;
+    }
+    const newAttrs = /\bclass="/.test(attrs)
+      ? attrs.replace(/\bclass="([^"]*)"/, (_m, cls: string) => `class="${cls} ${WARNING_LABEL_CLASS}"`)
+      : `${attrs} class="${WARNING_LABEL_CLASS}"`;
+    return `<text${newAttrs}>${inner}</text>`;
+  });
+
+  if (!tagged.includes(WARNING_LABEL_CLASS)) {
+    return svg; // defensive: the marker was somewhere CSS couldn't safely target
+  }
+
+  const warningStyle = `<style>.${WARNING_LABEL_CLASS},.${WARNING_LABEL_CLASS} tspan{fill:#d29922 !important;}</style>`;
+  return tagged.replace(/(<svg[^>]*>)/, `$1${warningStyle}`);
+}
+
 // Matches just the opening `<path ...>` tag, regardless of whether it's
 // self-closed (`.../>`, what mmdc's CLI used to emit) or open-then-closed
 // (`...></path>`, what a raw `mermaid.render()` call emits directly — no
@@ -1143,13 +1199,20 @@ export async function renderMermaidToSvg(
       : withBackground.replace(/^<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
 
     const styled = applyBoldGlowStyling(withXlinkNs);
+    // Recolor any edge label containing the "⚠" pub/sub-fragility marker
+    // (see SYSTEM_PROMPT's pub/sub instructions in llm.ts) to amber so it
+    // reads as a warning rather than blending into ordinary "calls"/"writes"
+    // labels — round-13 adversarial review finding #2. Must run after
+    // applyBoldGlowStyling (shares its <style> !important precedent) but
+    // is otherwise independent of the flow-runner/legend steps below.
+    const withWarningStyling = styleWarningEdgeLabels(styled);
     const flowAnimation = opts.flowAnimation ?? "none";
     const withRunners =
       diagramType === "flowchart" && flowAnimation !== "none"
         ? flowAnimation === "css"
-          ? injectFlowRunnersCss(styled)
-          : injectFlowRunners(styled)
-        : styled;
+          ? injectFlowRunnersCss(withWarningStyling)
+          : injectFlowRunners(withWarningStyling)
+        : withWarningStyling;
     return { svg: appendLegend(withRunners, diagramType) };
   } finally {
     if (browser) await browser.close();
