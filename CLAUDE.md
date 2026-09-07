@@ -1884,3 +1884,101 @@ enough real, verified fixes have landed since the last scored round
 (3/10, round 12) that continuing to act on a 6-item-old score number
 stops being the disciplined choice. A fresh round-13 adversarial review
 is queued next.
+
+## 29. Round 13 (5/10) and round 14 (6/10) adversarial reviews — two more real fixes landed, one confirmed dead-end, one significant new gap found and NOT yet fixed (2026-09-07)
+
+Continuing under the same standing instruction as item 28 ("release it
+fast... fix things... no compromise on quality"). Ran the queued
+round-13 review, independently verified each finding against real
+code/screenshots before acting (as always), fixed what was real, then
+ran a follow-up round-14 review to check progress.
+
+**Round 13 scored 5/10** (up from 3/10 at round 12). Verified findings,
+two fixed:
+
+1. **Fixed** — the pub/sub "no publish edge shown" warning (the single
+   most valuable insight this diagram surfaces) rendered in the exact
+   same plain white text as routine "calls"/"writes" labels, so nothing
+   drew a reviewer's eye to it. `styleWarningEdgeLabels()` (new,
+   `backend/lib/mermaid.ts`) tags any rendered edge-label `<text>`
+   containing the "⚠" marker and recolors it amber via an `!important`
+   stylesheet rule. Verified live: a real Anthropic call reproduced the
+   warning and the screenshot confirms it now renders amber, not white.
+2. **Fixed** — sequenceDiagram output had zero on-diagram explanation of
+   what the blue `rect rgba(88, 166, 255, 0.3)` diff-highlight band
+   means, unlike flowchart, which spells out solid/dashed in its own
+   footer caption. `appendLegend()` now branches on diagramType:
+   flowchart keeps its existing multi-category footer,
+   `appendSequenceLegend()` (new) draws a minimal single-row caption
+   footer for sequenceDiagram ("blue highlight = new flow or steps added
+   by this PR"), reusing the same footer geometry. Verified live against
+   the real disjoint-highlight scenario (two separate blue bands) —
+   screenshot confirms the caption renders correctly underneath both.
+3. **Verified FALSE, not fixed** — finding #13 ("no PR/caption context
+   around the diagram") does not reproduce against the actual product:
+   `buildCommentBody()` (`action/src/comment.ts`) already puts `PR
+   #<n> · <count> files matched` directly in the comment's own header,
+   right next to the title. The round-13 reviewer was only shown the
+   bare diagram image in isolation, not the full comment body it
+   actually ships inside — a gap in that review's own test setup, not in
+   the product.
+4. Findings #10 (participant-level new/pre-existing visual distinction
+   in sequence diagrams) and #12 (per-band labeling for multi-segment
+   sequence highlighting) were reconsidered against the actual rendered
+   output rather than fixed: #12 looks already adequately addressed by
+   context alone — each highlighted band's own message content already
+   distinguishes it, and the new sequence legend caption now explains
+   the convention once. #10 is a real, separate, bigger-scope ask
+   (visually marking "this participant/service is new" the way
+   flowchart node categories do) — deliberately deferred, not silently
+   dropped, since it's a design addition rather than a quick fix.
+
+9 new/updated tests (207 -> 216 backend tests), `tsc --noEmit` clean on
+both workspaces, 2 commits.
+
+**Round 14 scored 6/10.** Independently verified both concrete findings
+before deciding what to do with them:
+
+5. **Re-confirmed as the SAME already-disclosed, unfixable limitation**
+   (item 20) — the pub/sub warning edge's own path loops around almost
+   the entire canvas margin before reaching its target node. Checked the
+   actual SVG path data directly rather than trusting the screenshot
+   alone: it really does route from y=696 down to y=735 and all the way
+   back up to y=323 — genuine ELK orthogonal-routing box/ladder behavior,
+   the same confirmed-unfixable-without-forking-the-dependency limitation
+   already disclosed in item 20, now just visible on a specific edge that
+   happens to matter more. Not a new bug; re-litigation of an accepted one.
+6. **Real, reproducible, NOT fixed — node/subgraph naming is unstable
+   across separate regenerations of the IDENTICAL diff.** Ran the same
+   10-file scale-test diff through two back-to-back live Anthropic calls:
+   node IDs, node labels, and subgraph titles all changed between runs —
+   "Business Logic" vs. "Service Layer," "External Services" vs.
+   "External Systems," "Orders/Refunds Routes" vs. "ordersController +
+   routes." This is a real trust problem for the product's own pitch (a
+   team's "shared architecture language" that relabels itself on every
+   PR push isn't shared or stable) and it reproduced on the first try, not
+   a fluke of comparing screenshots from different points in this session.
+   Investigated the obvious cheap fix — lowering sampling temperature —
+   and hit a confirmed dead end: `claude-sonnet-5` (the tier this exact
+   scale scenario escalates to, per the item-21 model-tier decision)
+   rejects BOTH `temperature` and `top_p` outright with 400 "deprecated
+   for this model" (checked `top_p` directly against the live API, not
+   assumed from the existing `temperature`-deprecation comment). There is
+   currently no sampling-parameter lever available for this model tier at
+   all — any real fix has to be architectural: either (a) derive
+   node/subgraph labels deterministically from the diff itself in code
+   rather than trusting the model to name them, similar in spirit to how
+   `reconcileDatastoreNodeLabels` already reconciles datastore labels
+   deterministically, or (b) cache the previous diagram's naming per PR
+   and feed it back into the prompt on regeneration so a re-push reuses
+   the same vocabulary instead of re-inventing it. Both are real feature
+   work, not quick fixes — flagged for Anurag rather than silently
+   deferred or silently started, since it's a genuinely new, scope-sized
+   decision and directly relevant to the score >= 9 gate.
+
+**Status toward the score >= 9 gate**: 6/10 as of round 14, up from
+3/10 two rounds ago. The standing payment-integration gate (score >= 9)
+stays in force. The single largest remaining gap standing between here
+and 9/10 is the naming-instability finding above — everything else
+found across rounds 13-14 is now either fixed, confirmed-false, or an
+already-accepted, disclosed layout limitation.
