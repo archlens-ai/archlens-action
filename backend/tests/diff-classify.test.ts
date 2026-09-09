@@ -1317,4 +1317,38 @@ describe("reconcileDatastoreNodeLabels", () => {
     const result = reconcileDatastoreNodeLabels(source);
     expect(result).toContain('"orders / inventory / shipping tables"');
   });
+
+  // Round-15 finding, live-verified: a node-count-cap-driven prompt
+  // tightening (llm.ts) encourages the model to merge distinct services
+  // into one node only under real pressure, but when it does, the merged
+  // node's own label reads like "OrderService + InventoryService" — and
+  // the keyword-derivation logic used to look only at the FIRST
+  // "+"-separated part, silently dropping every constituent service after
+  // it. A live call produced exactly this shape and the datastore label
+  // came back missing "inventory" even though InventoryService's own
+  // write was folded into the merged node's write edge.
+  it("derives a keyword from EVERY constituent service in a merged 'A + B' node label, not only the first", () => {
+    const source = [
+      "flowchart TD",
+      '  OrderInvService["OrderService + InventoryService"]',
+      '  Tables["orders / refunds tables"]',
+      "class OrderInvService logic",
+      "class Tables datastore",
+      "OrderInvService -->|writes| Tables",
+    ].join("\n");
+    const result = reconcileDatastoreNodeLabels(source);
+    expect(result).toContain('"orders / refunds / inventory tables"');
+  });
+
+  it("still works when a merged node's constituents are already fully present in the target label", () => {
+    const source = [
+      "flowchart TD",
+      '  OrderInvService["OrderService + InventoryService"]',
+      '  Tables["orders / inventory tables"]',
+      "class OrderInvService logic",
+      "class Tables datastore",
+      "OrderInvService -->|writes| Tables",
+    ].join("\n");
+    expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
 });

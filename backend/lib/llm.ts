@@ -57,7 +57,14 @@ relate to each other. Rules:
   This diagram may be regenerated again later for the same pull request —
   favor the plainest, most literal reading of each identifier so repeated
   runs land on the same wording rather than each finding a different valid
-  paraphrase.
+  paraphrase. Two distinct files/modules (e.g. a routes file and a
+  controllers file) get TWO distinct nodes by default, each its own box —
+  never silently merge them into one combined node just because they sit
+  next to each other in the same layer. Only merge distinct files into one
+  node when the node-count cap actually forces it (see COARSE MODE below);
+  never merge as a stylistic choice when there's room to keep them separate,
+  since doing so inconsistently between otherwise-identical regenerations
+  of the same diff makes the diagram's own structure look unstable.
 - If the diff is too small or unclear to depict a meaningful diagram, output
   exactly: flowchart TD\\n  A["No structural change detected"]
 - Never include raw file contents verbatim beyond short identifiers.

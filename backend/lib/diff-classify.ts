@@ -914,13 +914,16 @@ export function reconcileDatastoreNodeLabels(source: string): string {
     if (categoryOf.get(targetId) !== "datastore") continue;
     if (categoryOf.get(sourceId) === "datastore") continue;
 
-    const keyword = deriveTableKeyword(sourceId, labelOf.get(sourceId));
-    if (!keyword) continue;
+    const keywords = deriveTableKeywords(sourceId, labelOf.get(sourceId));
+    if (keywords.length === 0) continue;
     const targetLabel = labelOf.get(targetId);
-    if (targetLabel === undefined || labelAlreadyMentions(targetLabel, keyword)) continue;
+    if (targetLabel === undefined) continue;
 
-    if (!missingByTarget.has(targetId)) missingByTarget.set(targetId, new Set());
-    missingByTarget.get(targetId)!.add(keyword);
+    for (const keyword of keywords) {
+      if (labelAlreadyMentions(targetLabel, keyword)) continue;
+      if (!missingByTarget.has(targetId)) missingByTarget.set(targetId, new Set());
+      missingByTarget.get(targetId)!.add(keyword);
+    }
   }
 
   if (missingByTarget.size === 0) {
@@ -941,11 +944,28 @@ export function reconcileDatastoreNodeLabels(source: string): string {
     .join("\n");
 }
 
-function deriveTableKeyword(nodeId: string, label: string | undefined): string | null {
-  const primary = (label ?? nodeId).split(/\s*\+\s*/)[0] ?? (label ?? nodeId);
-  const candidates = tokenize(primary).filter((t) => t.length >= 3);
-  if (candidates.length === 0) return null;
-  return candidates.reduce((shortest, t) => (t.length < shortest.length ? t : shortest));
+// Round-15 finding, live-verified: a node whose label reads
+// "OrderService + InventoryService" -- the model's own way of writing
+// down a merge of two originally-separate services into one node under
+// node-cap pressure -- used to derive a keyword from ONLY the first "+"
+// -separated part, silently dropping every other one. A merged node's
+// write edge could therefore never surface the SECOND service's own table
+// even when the datastore label was otherwise missing it -- the exact
+// bug this whole function exists to prevent, just reachable through a
+// node-merging path rather than a missing-edge path. Now derives one
+// keyword per "+"-separated part and returns all of them, so a merged
+// node contributes every constituent service's own keyword, not just the
+// first one alphabetically/positionally written.
+function deriveTableKeywords(nodeId: string, label: string | undefined): string[] {
+  const parts = (label ?? nodeId).split(/\s*\+\s*/).filter(Boolean);
+  const keywords: string[] = [];
+  for (const part of parts) {
+    const candidates = tokenize(part).filter((t) => t.length >= 3);
+    if (candidates.length === 0) continue;
+    const shortest = candidates.reduce((s, t) => (t.length < s.length ? t : s));
+    if (!keywords.includes(shortest)) keywords.push(shortest);
+  }
+  return keywords;
 }
 
 function labelAlreadyMentions(label: string, keyword: string): boolean {
