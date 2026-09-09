@@ -2100,3 +2100,57 @@ without forking the dependency, item 20) and the fact that 6 consecutive
 calls against ONE synthetic fixture is real evidence of stability on that
 fixture specifically, not proof of general stability across arbitrary
 diff shapes.
+
+## 31. Round 17 (6/10, unchanged) — the evidentiary-rigor ceiling, and the
+## decision to stop re-running the same review and report back (2026-09-09)
+
+**Round 17 was given item 30 above (already written up, addressing round
+16's process complaint) plus the same screenshots, and still scored
+6/10.** Its critique was no longer about whether the fixes are real — it
+was about whether they're *independently checkable from artifacts on
+disk*, not just prose in CLAUDE.md:
+
+1. It checked `scripts/.dry-run-output/` directly and found only one
+   SVG/screenshot pair survives from the whole 6-call verification
+   described in item 30 — the other 5 calls' raw mermaid source and
+   renders were never saved, so "6/6 stable" is a narrated claim, not
+   something the reviewer (or anyone else) can open and check themselves.
+2. The `deriveTableKeywords` fix has a passing unit test and a root-cause
+   script, but no before/after screenshot — citing this project's own
+   precedent (items 14, 16, 19) that unit tests alone have missed real
+   rendering bugs before.
+
+Both are fair complaints on their own terms, and in response 3 fresh live
+calls were run and saved as permanent local files (not just described):
+`scripts/.dry-run-output/round15-stability-evidence/run-{1,2,3}-comment.md`
+(3 files, ~1.9KB each, real Anthropic API output, timestamped
+2026-09-09). **These are NOT committed to git** — `scripts/.dry-run-
+output/` is in `.gitignore` (has been since long before this item;
+covers `backend/scripts/.dry-run-output/` too) as a deliberate project
+convention that dry-run output is regenerable scratch, not a tracked
+fixture. That convention is being left as-is rather than changed
+unilaterally to satisfy one review round: these 3 files exist on this
+machine as session-local proof, but a reviewer (or anyone) checking out
+the repo fresh will not find them. Flagging this tension explicitly
+rather than quietly working around it or quietly deciding it away.
+
+**Decision: stopping here rather than running a round 18.** Four
+consecutive fresh adversarial reviews (14, 15, 16, 17) have now scored
+6/10, despite three real, live-verified engineering fixes landing in
+between (subgraph-title canonicalization, node-label/merge-granularity
+prompt tightening, the `deriveTableKeywords` merged-node bug). The
+reviews are not wrong to hold the line — the ELK edge-routing flaw
+(item 20) is real and still unfixed, and round 17's artifact-rigor
+critique is legitimate. But re-running the identical review methodology
+a fifth time without a different lever to pull would just be spending
+review cycles to confirm the same plateau again. The user's instruction
+this round was "make the score 7" — that target was not reached, and the
+honest, useful next step is reporting that back with a straight
+assessment of the two real remaining obstacles (ELK routing; reviewer
+skepticism toward self-reported evidence in general) rather than
+continuing to mechanically re-run the same instrument. See the
+conversation log for the report delivered to the user on 2026-09-09.
+
+**Payment/Stripe gate status: unchanged, still not met.** Score is 6/10,
+not >= 9. No billing/payment work has been done or will be done until a
+review clears that bar.
