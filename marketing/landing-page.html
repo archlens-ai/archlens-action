@@ -384,6 +384,55 @@
     color: var(--ink-dim);
   }
 
+  /* ---------- legal ---------- */
+  .legal-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+  }
+  .policy-block {
+    background: var(--surface);
+    border: 1px solid var(--grid);
+    border-radius: 6px;
+    padding: 24px 26px;
+  }
+  .policy-block h3 {
+    font-size: 1.05rem;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: 4px;
+  }
+  .policy-block .policy-meta {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    color: var(--ink-dim);
+    margin-bottom: 14px;
+  }
+  .policy-block p, .policy-block li {
+    font-size: 0.9rem;
+    color: var(--ink-dim);
+  }
+  .policy-block ul {
+    margin: 10px 0 0;
+    padding-left: 18px;
+  }
+  .policy-block li { margin-bottom: 6px; }
+  .policy-block p + p { margin-top: 10px; }
+  .policy-block strong { color: var(--ink); }
+  .legal-footer-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+  }
+  .legal-footer-row a { color: var(--ink-dim); text-decoration: none; }
+  .legal-footer-row a:hover { color: var(--accent); }
+
+  @media (max-width: 860px) {
+    .legal-grid { grid-template-columns: 1fr; }
+  }
+
   @media (max-width: 860px) {
     .hero-grid { grid-template-columns: 1fr; }
     .transform { grid-template-columns: 1fr; }
@@ -578,11 +627,63 @@
   </div>
 </section>
 
+<section class="divider" id="legal">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Legal &amp; trust</p>
+      <h2>The fine print</h2>
+      <p>ArchLens only ever sees a compressed, structural slice of a diff — never a full repo, never runtime data, never your end users' information. The policies below cover what that means in practice.</p>
+    </div>
+    <div class="legal-grid">
+      <div class="policy-block" id="privacy">
+        <h3>Privacy Policy</h3>
+        <p class="policy-meta mono">What we collect · what we don't</p>
+        <p>Before a diff ever reaches an LLM, the GitHub Action strips it down to structural signal — changed route paths, schema/migration names, function and class identifiers — and discards comments, log lines, and full file bodies. That compressed payload, not your source code, is what's sent for diagram generation.</p>
+        <ul>
+          <li><strong>Account data:</strong> GitHub org/repo identifiers, billing email, and subscription tier, stored in Supabase.</li>
+          <li><strong>Processors:</strong> Anthropic and OpenAI (diagram generation), Stripe or Razorpay (billing only — we never see full card details), Supabase (storage), Vercel (hosting).</li>
+          <li><strong>Caching:</strong> generated diagrams are cached by content hash to avoid re-billing identical diffs; cached output can be cleared on request.</li>
+          <li><strong>Never collected:</strong> your end users' personal data, database contents, secrets, or credentials.</li>
+        </ul>
+      </div>
+      <div class="policy-block" id="terms">
+        <h3>Terms of Service</h3>
+        <p class="policy-meta mono">What you're actually buying</p>
+        <p>ArchLens is a GitHub Action plus a hosted API that generates an architecture diagram from a pull request's diff and posts it as a PR comment. Plans: free on public repos, <strong>$12/mo per private repo</strong>, <strong>$29/mo per GitHub org</strong> — billed monthly, auto-renewing until cancelled.</p>
+        <ul>
+          <li>Each plan has a monthly diagram quota; going over it produces a soft warning comment, never a failed CI run, unless you opt into <span class="mono">fail-on-error</span>.</li>
+          <li>Diagrams are AI-generated and meant as a review aid, not a verified source of truth — always confirm structural claims against the actual diff.</li>
+          <li>No reverse-engineering the rendering pipeline, and no splitting one org across multiple accounts to bypass quota.</li>
+          <li>Either side may end the relationship at any time; access continues through the period already paid for.</li>
+        </ul>
+      </div>
+      <div class="policy-block" id="refunds">
+        <h3>Refund &amp; Cancellation Policy</h3>
+        <p class="policy-meta mono">Monthly, cancel anytime</p>
+        <p>Public-repo usage is free permanently, no card required. Paid plans are billed monthly in advance and can be cancelled at any time from your billing settings — cancellation takes effect at the end of the current billing cycle, with no partial-month refund for unused days.</p>
+        <p>If you were charged in error or a generation failure caused a billed month with no usable output, contact support within 7 days of the charge and we'll review it case by case.</p>
+      </div>
+      <div class="policy-block" id="contact">
+        <h3>Contact &amp; Support</h3>
+        <p class="policy-meta mono">Bengaluru, India</p>
+        <p>Billing, privacy, and support questions: <a href="mailto:support@archlens.dev" class="mono">support@archlens.dev</a>. We aim to reply within 2 business days.</p>
+        <p>For security disclosures, use the same address with <span class="mono">[security]</span> in the subject line.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <footer>
   <div class="wrap footer-grid">
     <div>
       <div class="brand"><span class="mark">△</span> ArchLens AI</div>
       <p class="fine" style="margin-top:10px;">Visual Architecture Map Generated by ArchLens AI.</p>
+    </div>
+    <div class="legal-footer-row">
+      <a href="#privacy">Privacy</a>
+      <a href="#terms">Terms</a>
+      <a href="#refunds">Refunds</a>
+      <a href="#contact">Contact</a>
     </div>
     <p class="fine">Built with Mermaid.js · rendered server-side · never runs Chromium in your CI</p>
   </div>
