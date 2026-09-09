@@ -11,6 +11,7 @@ import {
   sanitizeEdgeLabelQuotes,
   closeUnclosedSequenceBlocks,
   reconcileDatastoreNodeLabels,
+  canonicalizeSubgraphTitles,
   type DiffPatchFile,
 } from "../lib/diff-classify.js";
 
@@ -760,6 +761,180 @@ describe("groupUngroupedExternalNodes", () => {
   it("is a no-op for sequenceDiagram", () => {
     const source = "sequenceDiagram\n  A->>B: hi";
     expect(groupUngroupedExternalNodes(source)).toBe(source);
+  });
+});
+
+describe("canonicalizeSubgraphTitles", () => {
+  // Round-14 finding, reproduced live: the identical diff produced
+  // different subgraph titles across two separate live calls ("Business
+  // Logic" vs. "Service Layer"). Each subgraph's own *Region class already
+  // states its category unambiguously, so the title gets forced to the
+  // fixed canonical string for that region regardless of what the model
+  // wrote.
+  it("rewrites a non-canonical title to the canonical one for its region", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Logic["Service Layer"]',
+      '    OrderService["orderService.ts"]',
+      "  end",
+      "  class Logic logicRegion",
+      "  class OrderService logic",
+    ].join("\n");
+    const result = canonicalizeSubgraphTitles(source);
+    expect(result).toContain('subgraph Logic["Business Logic"]');
+    expect(result).not.toContain("Service Layer");
+  });
+
+  it("rewrites all four canonical regions correctly in the same diagram", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph API["Routes"]',
+      '    A["a.ts"]',
+      "  end",
+      "  class API endpointRegion",
+      '  subgraph Logic["Services"]',
+      '    B["b.ts"]',
+      "  end",
+      "  class Logic logicRegion",
+      '  subgraph Data["DB"]',
+      '    C["c.ts"]',
+      "  end",
+      "  class Data datastoreRegion",
+      '  subgraph Ext["Third Parties"]',
+      '    D["d.ts"]',
+      "  end",
+      "  class Ext externalRegion",
+      "  class A endpoint",
+      "  class B logic",
+      "  class C datastore",
+      "  class D external",
+    ].join("\n");
+    const result = canonicalizeSubgraphTitles(source);
+    expect(result).toContain('subgraph API["API Layer"]');
+    expect(result).toContain('subgraph Logic["Business Logic"]');
+    expect(result).toContain('subgraph Data["Data Layer"]');
+    expect(result).toContain('subgraph Ext["External Services"]');
+  });
+
+  it("is a no-op when the title is already the canonical one", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Logic["Business Logic"]',
+      '    A["a.ts"]',
+      "  end",
+      "  class Logic logicRegion",
+      "  class A logic",
+    ].join("\n");
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
+  });
+
+  // The one deliberate exception: forcing two DIFFERENT subgraphs that
+  // happen to share a region onto the identical canonical title would make
+  // two genuinely distinct groups look like duplicates of each other —
+  // worse than the instability this function exists to fix. Both must be
+  // left completely untouched rather than picking one arbitrarily.
+  it("leaves both titles alone when two subgraphs share the same region", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Ext1["Payment Providers"]',
+      '    A["a.ts"]',
+      "  end",
+      "  class Ext1 externalRegion",
+      '  subgraph Ext2["Notification Providers"]',
+      '    B["b.ts"]',
+      "  end",
+      "  class Ext2 externalRegion",
+      "  class A,B external",
+    ].join("\n");
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
+  });
+
+  // The realistic case, found by live-verifying the first version of this
+  // fix: the model classes every individual node correctly but never
+  // actually emits the separate subgraph-level `class SubgraphId
+  // <region>Region` line the SYSTEM_PROMPT asks for. Two fresh live calls
+  // in a row produced zero such lines between them. The fix has to work
+  // from ordinary per-node categories alone, or it ships completely inert.
+  it("infers the region from member nodes' own categories when no explicit *Region class line exists at all — the real shape live output actually takes", () => {
+    const source = [
+      "flowchart TD",
+      'subgraph API["API Routes"]',
+      '  Routes["orders.ts / refunds.ts routes"]',
+      '  Controllers["ordersController / refundsController"]',
+      "end",
+      "class Routes,Controllers endpoint",
+      "",
+      'subgraph Logic["Service Layer"]',
+      '  OrderService["orderService.ts"]',
+      '  RefundService["refundService.ts"]',
+      "end",
+      "class OrderService,RefundService logic",
+      "",
+      'subgraph ThirdParty["External Systems"]',
+      '  EventBus["EventBus"]',
+      '  PaymentGateway["PaymentGateway"]',
+      "end",
+      // Note: no `class API endpointRegion` / `class Logic logicRegion` /
+      // `class ThirdParty externalRegion` lines anywhere in this source --
+      // exactly what live output actually looked like.
+      "class EventBus,PaymentGateway externalContext",
+    ].join("\n");
+    const result = canonicalizeSubgraphTitles(source);
+    expect(result).toContain('subgraph API["API Layer"]');
+    expect(result).toContain('subgraph Logic["Business Logic"]');
+    expect(result).toContain('subgraph ThirdParty["External Services"]');
+    expect(result).not.toContain("Service Layer");
+    expect(result).not.toContain("External Systems");
+  });
+
+  it("prefers an explicit *Region class line over inference when both are present", () => {
+    // A contrived case where the member's own category would infer
+    // "logic" but the subgraph's own explicit region line says otherwise
+    // -- the explicit line is the more direct signal and wins.
+    const source = [
+      "flowchart TD",
+      '  subgraph Weird["Odd Grouping"]',
+      '    A["a.ts"]',
+      "  end",
+      "  class Weird endpointRegion",
+      "  class A logic",
+    ].join("\n");
+    const result = canonicalizeSubgraphTitles(source);
+    expect(result).toContain('subgraph Weird["API Layer"]');
+  });
+
+  it("leaves a subgraph untouched when its members span more than one category", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Mixed["Grab Bag"]',
+      '    A["a.ts"]',
+      '    B["b.ts"]',
+      "  end",
+      "  class A logic",
+      "  class B datastore",
+    ].join("\n");
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
+  });
+
+  it("leaves a subgraph untouched when none of its members have a known category", () => {
+    const source = [
+      "flowchart TD",
+      '  subgraph Weird["Some Title"]',
+      '    A["a.ts"]',
+      "  end",
+      "  class A removed",
+    ].join("\n");
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
+  });
+
+  it("is a no-op for sequenceDiagram", () => {
+    const source = "sequenceDiagram\n  A->>B: hi";
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
+  });
+
+  it("returns the source unchanged when there are no subgraphs at all", () => {
+    const source = ['flowchart TD', '  A["a.ts"] --> B["b.ts"]', "  class A,B logic"].join("\n");
+    expect(canonicalizeSubgraphTitles(source)).toBe(source);
   });
 });
 

@@ -47,7 +47,17 @@ relate to each other. Rules:
   about data/schema/module structure.
 - Keep node/participant labels short (under 40 chars) and derived from actual
   identifiers in the diff (table names, route paths, function/class names) —
-  never invent components that aren't evidenced by the diff.
+  never invent components that aren't evidenced by the diff. When a file
+  defines one primary class/service/function (e.g. \`class OrderService\` in
+  \`orderService.ts\`), label the node with THAT SYMBOL NAME, not the raw
+  filename — never alternate between filename-style (\`orderService.ts\`) and
+  symbol-style (\`OrderService\`) labels for the same kind of component
+  within one diagram, and prefer symbol-style consistently across separate
+  diagrams for the same repo where the diff makes the symbol name available.
+  This diagram may be regenerated again later for the same pull request —
+  favor the plainest, most literal reading of each identifier so repeated
+  runs land on the same wording rather than each finding a different valid
+  paraphrase.
 - If the diff is too small or unclear to depict a meaningful diagram, output
   exactly: flowchart TD\\n  A["No structural change detected"]
 - Never include raw file contents verbatim beyond short identifiers.

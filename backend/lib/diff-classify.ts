@@ -1104,6 +1104,187 @@ export function collapseSingleNodeSubgraphs(source: string): string {
   return kept.join("\n");
 }
 
+const SUBGRAPH_TITLE_LINE_RE = /^(\s*subgraph\s+)(\w+)\["([^"]*)"\]\s*$/;
+
+// Fixed 1:1 mapping from a subgraph's region (endpoint/logic/datastore/
+// external) to a single canonical title string. These are literally the
+// SYSTEM_PROMPT's own example titles (`subgraph API["API Layer"]` etc.) --
+// not a new vocabulary, just the one the model already reaches for most
+// often, now made mandatory rather than a suggestion it's free to
+// paraphrase.
+const CANONICAL_SUBGRAPH_TITLES: Record<string, string> = {
+  endpointRegion: "API Layer",
+  logicRegion: "Business Logic",
+  datastoreRegion: "Data Layer",
+  externalRegion: "External Services",
+};
+
+const CATEGORY_TO_REGION: Record<string, string> = {
+  endpoint: "endpointRegion",
+  logic: "logicRegion",
+  datastore: "datastoreRegion",
+  external: "externalRegion",
+};
+
+/**
+ * Round-14 review (2026-09-07) finding, reproduced live: running the
+ * IDENTICAL diff through two separate live Anthropic calls produced
+ * different subgraph titles each time for the same region -- "Business
+ * Logic" vs. "Service Layer," "External Services" vs. "External Systems."
+ * A team's shared architecture language can't be shared if it relabels
+ * itself on every regeneration. `claude-sonnet-5` (the tier this exact
+ * scale scenario escalates to) was confirmed, via a direct live API probe,
+ * to reject both `temperature` and `top_p` outright -- there is no
+ * sampling-parameter lever available to reduce this variance, so the fix
+ * has to remove the model's freedom to choose the wording at all, for the
+ * one piece of text where that's actually safe to do: a subgraph's own
+ * title conveys nothing beyond "this is the endpoint/logic/datastore/
+ * external region," which is fully recoverable from the diagram's own
+ * per-node category classes.
+ *
+ * First version of this fix (still visible in git history) rewrote a
+ * subgraph's title based on its own `class SubgraphId <region>Region`
+ * line, exactly as the SYSTEM_PROMPT instructs the model to emit
+ * separately from its per-node classes. Live-verifying it immediately
+ * caught that version shipping completely inert: two fresh live calls in
+ * a row, the model classed every individual node correctly but never once
+ * emitted the separate subgraph-level `*Region` class line at all -- the
+ * exact "prompt alone isn't reliable enough" pattern behind every other
+ * backstop in this file, just discovered for a DIFFERENT instruction than
+ * the one this fix originally targeted. Rather than lean harder on a
+ * second prompt instruction the model has already shown it can silently
+ * skip, this INFERS each subgraph's region from its own member nodes'
+ * ordinary per-node categories instead (`class Routes,Controllers
+ * endpoint` etc.) -- the one signal the model reliably does emit on every
+ * single node, in every diagram, because assignMissingCategories() and
+ * reconcileDiffClassification() already depend on it being there. An
+ * explicit `class SubgraphId <region>Region` line, when the model does
+ * happen to emit one, is still honored and takes priority over inference.
+ *
+ * Deliberately conservative in two places:
+ * 1. A subgraph whose member nodes span MORE THAN ONE base category (no
+ *    single category accounts for every classed member) has no inferrable
+ *    region at all -- left completely untouched rather than guessing which
+ *    category is "dominant."
+ * 2. If TWO OR MORE subgraphs in the same diagram resolve to the SAME
+ *    region (the SYSTEM_PROMPT's "at most 3-4 subgraphs" guidance suggests
+ *    one per category is the norm, but doesn't forbid splitting one
+ *    category into two groups), forcing both onto the identical canonical
+ *    title would make two genuinely distinct groups look like duplicates
+ *    of each other -- worse than the instability this fixes. Both are left
+ *    completely untouched, canonical title or not.
+ *
+ * A no-op for sequenceDiagram, and for any subgraph whose title isn't in
+ * the `Id["..."]`-with-double-quotes shape the SYSTEM_PROMPT's own example
+ * always uses.
+ */
+export function canonicalizeSubgraphTitles(source: string): string {
+  const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
+  if (!isFlowchart) {
+    return source;
+  }
+
+  const lines = source.split("\n");
+
+  const subgraphIds = new Set<string>();
+  for (const m of source.matchAll(/subgraph\s+(\w+)/g)) subgraphIds.add(m[1]!);
+
+  // Two things come out of the same class-line scan: an explicit subgraph
+  // region (`class SubgraphId <region>Region`, when the model does emit
+  // it) and each ordinary node's own base category (`class NodeId
+  // <category>`/`<category>Context`) -- distinguished by whether the id is
+  // a known subgraph id or not, same disambiguation this file already
+  // relies on elsewhere (e.g. reconcileDiffClassification).
+  const explicitRegionOfSubgraph = new Map<string, string>();
+  const categoryOfNode = new Map<string, string>();
+  for (const line of lines) {
+    const classMatch = CLASS_LINE_RE.exec(line);
+    if (!classMatch) continue;
+    const category = classMatch[3]!;
+    for (const id of classMatch[2]!.split(",").map((s) => s.trim())) {
+      if (!id) continue;
+      if (subgraphIds.has(id)) {
+        if (category in CANONICAL_SUBGRAPH_TITLES) explicitRegionOfSubgraph.set(id, category);
+      } else {
+        const base = baseCategoryOf(category);
+        if (base) categoryOfNode.set(id, base);
+      }
+    }
+  }
+
+  // Walk the source tracking subgraph nesting (mirrors
+  // collapseSingleNodeSubgraphs's own Frame-stack approach) to collect
+  // each subgraph's direct-child node ids, so a region can be INFERRED
+  // from those members' own categories when no explicit region line
+  // exists for that subgraph.
+  interface Frame {
+    id: string;
+    memberIds: string[];
+  }
+  const stack: Frame[] = [];
+  const memberIdsBySubgraph = new Map<string, string[]>();
+  for (const line of lines) {
+    const openMatch = SUBGRAPH_OPEN_RE.exec(line);
+    if (openMatch) {
+      stack.push({ id: openMatch[1]!, memberIds: [] });
+      continue;
+    }
+    if (SUBGRAPH_END_RE.test(line) && stack.length > 0) {
+      const frame = stack.pop()!;
+      memberIdsBySubgraph.set(frame.id, frame.memberIds);
+      continue;
+    }
+    if (stack.length === 0) continue;
+    const nodeMatch = NODE_DECL_RE.exec(line.trim());
+    if (nodeMatch) stack[stack.length - 1]!.memberIds.push(nodeMatch[1]!);
+  }
+
+  const regionBySubgraphId = new Map<string, string>();
+  for (const id of subgraphIds) {
+    const explicit = explicitRegionOfSubgraph.get(id);
+    if (explicit) {
+      regionBySubgraphId.set(id, explicit);
+      continue;
+    }
+    const memberCategories = new Set(
+      (memberIdsBySubgraph.get(id) ?? [])
+        .map((memberId) => categoryOfNode.get(memberId))
+        .filter((c): c is string => Boolean(c))
+    );
+    if (memberCategories.size === 1) {
+      const [onlyCategory] = memberCategories;
+      regionBySubgraphId.set(id, CATEGORY_TO_REGION[onlyCategory!]!);
+    }
+    // size 0 (no classed members found) or > 1 (mixed categories) -- no
+    // inferrable region, left out of the map entirely.
+  }
+
+  // Count how many DISTINCT subgraph ids resolve to each region -- only a
+  // region with exactly one owning subgraph is safe to canonicalize (see
+  // this function's own docstring for why 2+ is left alone).
+  const idsByRegion = new Map<string, Set<string>>();
+  for (const [id, region] of regionBySubgraphId) {
+    if (!idsByRegion.has(region)) idsByRegion.set(region, new Set());
+    idsByRegion.get(region)!.add(id);
+  }
+
+  let changed = false;
+  const rewritten = lines.map((line) => {
+    const titleMatch = SUBGRAPH_TITLE_LINE_RE.exec(line);
+    if (!titleMatch) return line;
+    const id = titleMatch[2]!;
+    const region = regionBySubgraphId.get(id);
+    if (!region) return line;
+    if ((idsByRegion.get(region)?.size ?? 0) !== 1) return line; // 2+ subgraphs share this region
+    const canonicalTitle = CANONICAL_SUBGRAPH_TITLES[region]!;
+    if (titleMatch[3] === canonicalTitle) return line; // already correct -- no-op
+    changed = true;
+    return `${titleMatch[1]}${id}["${canonicalTitle}"]`;
+  });
+
+  return changed ? rewritten.join("\n") : source;
+}
+
 const SEQUENCE_BLOCK_OPEN_RE = /^\s*(alt|opt|loop|par|critical|rect|break)\b/;
 const SEQUENCE_BLOCK_END_RE = /^\s*end\s*$/;
 const SEQUENCE_MESSAGE_RE = /^\s*[\w]+\s*-{1,2}[x>)]{1,2}\s*[\w]+\s*:/;

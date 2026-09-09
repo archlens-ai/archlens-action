@@ -11,6 +11,7 @@ import {
   sanitizeEdgeLabelQuotes,
   closeUnclosedSequenceBlocks,
   reconcileDatastoreNodeLabels,
+  canonicalizeSubgraphTitles,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
@@ -225,6 +226,21 @@ export async function handleGenerateRequest(
     // their own "External Services" subgraph; conservatively a no-op if
     // they aren't contiguous in the source (see its own docstring).
     mermaidSource = groupUngroupedExternalNodes(mermaidSource);
+
+    // Deterministic backstop, round-14 review finding (2026-09-07),
+    // reproduced live: running the IDENTICAL diff through two separate
+    // live Anthropic calls produced different subgraph titles each time
+    // for the same region ("Business Logic" vs. "Service Layer," etc.) —
+    // a real trust problem for a product whose pitch depends on being a
+    // team's stable shared reference. No sampling-parameter fix exists
+    // (claude-sonnet-5 rejects both temperature and top_p, confirmed via a
+    // direct live API probe), so this removes the model's freedom to
+    // choose the wording at all for the one piece of text where that's
+    // safe: a subgraph's own title conveys nothing beyond what its own
+    // `*Region` class already states deterministically. Runs after
+    // groupUngroupedExternalNodes (which can itself create a new
+    // subgraph) so it sees the diagram's final subgraph structure.
+    mermaidSource = canonicalizeSubgraphTitles(mermaidSource);
 
     // Deterministic backstop, round-11 finding (sequence diagram side of
     // the same review that flagged the single-node subgraph above): when
