@@ -1583,3 +1583,89 @@ export function groupUngroupedExternalNodes(source: string): string {
 
   return out.join("\n");
 }
+
+// Only `participant Name` (optionally `participant Name as "Display Name"`)
+// -- deliberately NOT `actor Name`. Per llm.ts's own SYSTEM_PROMPT, `actor`
+// is reserved for anything OUTSIDE this codebase's control (a human user,
+// an external third-party system) -- the sequence-diagram equivalent of
+// flowchart's `external` category -- so it was never a candidate for "did
+// this diff touch this" in the first place; `participant` is reserved for
+// "everything this codebase actually implements," which is exactly the set
+// this diff's own files can confirm or fail to confirm.
+const SEQUENCE_PARTICIPANT_DECL_RE = /^\s*participant\s+(\w+)(?:\s+as\s+.+)?\s*$/;
+
+export const CONTEXT_PARTICIPANTS_MARKER = "%% archlens:context-participants";
+
+/**
+ * Round-16 finding (CLAUDE.md item 29, finding #10), deliberately deferred
+ * at the time as "a real, separate, bigger-scope ask" rather than folded
+ * into that round's fixes: a sequenceDiagram's diff-awareness is currently
+ * MESSAGE-level only (the `rect rgba(88, 166, 255, 0.3)` highlight around
+ * new exchanges) -- every PARTICIPANT box renders identically regardless of
+ * whether it's the actual file this diff modifies or a pre-existing service
+ * merely being called into. A reviewer glancing at the diagram's header row
+ * has no way to tell, from the participant boxes alone, which one is the
+ * changed code -- exactly the flowchart-side distinction
+ * `endpoint`/`logic`/etc. vs. their `*Context` variants already draws
+ * (solid = changed by this PR, dashed = existing context), just never
+ * extended to sequence diagrams' own participant boxes.
+ *
+ * Same "recompute from the diff itself, don't trust the model's guess"
+ * philosophy as reconcileDiffClassification above, applied to
+ * participants instead of flowchart nodes: reuses the exact same
+ * computeDiffTouchState()/tokenize() machinery (a `participant
+ * checkoutController` declaration matches this diff's own
+ * `checkoutController.ts`/`checkout.ts` basenames, so it has real
+ * changed-evidence; `participant CartService`/`PaymentGateway`/etc. do not,
+ * since this diff never touches a file with those basenames) rather than
+ * asking the model to self-report which participants it just wrote vs.
+ * merely referenced -- the same category of instruction this project has
+ * repeatedly found a smaller production model won't reliably self-report
+ * (see e.g. round-14's subgraph-title finding above).
+ *
+ * Doesn't touch the mermaid source's own diagram syntax at all (sequence
+ * diagrams have no per-participant `class` mechanism the way flowcharts
+ * do) -- instead appends a single machine-readable `%%` comment line,
+ * which mermaid's own parser silently ignores (confirmed: comments never
+ * reach the rendered SVG in any diagram type), listing which participants
+ * have NO changed-evidence. mermaid.ts's renderMermaidToSvg reads this
+ * same marker back out of the raw source (before it's ever handed to
+ * mermaid.render()) and uses it to dim/dash those specific participants'
+ * rendered boxes -- see styleContextParticipants() there for the render
+ * side of this same fix, and CONTEXT_PARTICIPANTS_MARKER's own definition
+ * for the exact text both sides agree on.
+ *
+ * Deliberately conservative in one place: if EVERY declared participant
+ * comes back with no changed-evidence (most likely because this diff's
+ * changed files don't textually overlap ANY declared participant name --
+ * a real possibility, not just a classifier miss), marking 100% of them
+ * as "pre-existing" would erase the one signal this is meant to add
+ * (which one is new) rather than sharpen it -- worse than doing nothing.
+ * Only emits the marker when there's a genuine mix: at least one
+ * participant WITH changed-evidence and at least one WITHOUT.
+ */
+export function annotatePreexistingParticipants(source: string, files: DiffPatchFile[]): string {
+  const isSequence = /^sequenceDiagram\b/i.test(source.trim());
+  if (!isSequence) {
+    return source;
+  }
+
+  const { changed } = computeDiffTouchState(files);
+
+  let totalParticipants = 0;
+  const contextParticipants: string[] = [];
+  for (const line of source.split("\n")) {
+    const m = SEQUENCE_PARTICIPANT_DECL_RE.exec(line);
+    if (!m) continue;
+    totalParticipants++;
+    const tokens = tokenize(m[1]!);
+    const hasChanged = tokens.some((t) => changed.has(t));
+    if (!hasChanged) contextParticipants.push(m[1]!);
+  }
+
+  if (contextParticipants.length === 0 || contextParticipants.length >= totalParticipants) {
+    return source; // no mix to show -- either everyone matches, or no one does
+  }
+
+  return `${source.trimEnd()}\n${CONTEXT_PARTICIPANTS_MARKER} ${contextParticipants.join(",")}\n`;
+}

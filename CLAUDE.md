@@ -2154,3 +2154,124 @@ conversation log for the report delivered to the user on 2026-09-09.
 **Payment/Stripe gate status: unchanged, still not met.** Score is 6/10,
 not >= 9. No billing/payment work has been done or will be done until a
 review clears that bar.
+
+## 32. Sequence-diagram participant diff-awareness (item 29 #10, the one
+## deliberately-deferred finding), shipped and live-verified (2026-09-12)
+
+Anurag's instruction: "work on quality then make sure better" — a general
+directive to keep closing real gaps toward the score >= 9 gate, without
+naming a specific target. Rather than immediately re-run the same
+adversarial-review loop that's plateaued at 6/10 across four rounds (items
+29-31), picked the single concrete, previously-identified, never-attempted
+gap left on record: item 29 finding #10, explicitly deferred at the time as
+"a real, separate, bigger-scope ask... deliberately deferred, not silently
+dropped."
+
+**The gap, confirmed still real before touching any code.** A
+sequenceDiagram's diff-awareness has always been message-level only (the
+`rect rgba(88, 166, 255, 0.3)` highlight around new exchanges) — every
+PARTICIPANT box renders identically regardless of whether it's the actual
+file this diff modifies or a pre-existing service merely called into.
+Re-ran `scripts/dry-run-live-sequence.ts` fresh before assuming the gap
+still existed (rather than trusting a two-week-old writeup) and confirmed
+it: `checkoutController` (the file this diff's own 2 matching files
+actually touch) rendered in the exact same box style as `CartService`,
+`PricingService`, `PaymentGateway`, `OrderService`, `NotificationService`
+(pre-existing services merely called into) — a reviewer glancing at the
+header row has no way to tell which one is the changed code.
+
+**Fix, same "recompute from the diff itself, never trust the model's
+self-report" philosophy as every other backstop in diff-classify.ts:**
+`annotatePreexistingParticipants()` (new) reuses the exact same
+`computeDiffTouchState()`/`tokenize()` machinery reconcileDiffClassification
+already uses for flowchart nodes, applied to sequence `participant`
+declarations instead — deliberately never `actor` declarations, since
+llm.ts's own SYSTEM_PROMPT already reserves `actor` for anything outside
+this codebase's control (the sequence-diagram equivalent of flowchart's
+`external` category), so those were never candidates for "did this diff
+touch this" in the first place. A participant whose name carries no
+changed-evidence from the diff's own files gets appended to a `%%
+archlens:context-participants Name1,Name2` marker comment — mermaid's own
+parser drops `%%` comments before they ever reach rendered output (verified
+live, not assumed: the marker text never appears anywhere in the real
+rendered SVG), so this doesn't touch the diagram's actual syntax at all.
+
+`styleContextParticipants()` (new, mermaid.ts) is the render-side half: reads
+that same marker back out of the raw source text inside
+`renderMermaidToSvg`, and dims/dashes the named participants' actual
+rendered boxes — reusing flowchart's own already-established visual
+language (`*Context` categories: dashed border, dimmed fill, dimmed text)
+rather than inventing a second convention a reviewer would have to learn
+separately. Found and fixed a real structural landmine before it shipped,
+not after: mermaid wraps a sequence diagram's TOP participant row in an
+attributed `<g id="root-N" data-et="participant" ...>` but its BOTTOM row in
+a bare, attribute-less `<g>` — confirmed by direct inspection of a real
+rendered SVG, not assumed — so a regex keyed on the `<g>` wrapper shape
+would silently stop matching one of the two rows the moment either
+attribution style changed. Built and tested the regex directly against a
+real rendered SVG file (`node -e` one-liners against
+`scripts/.dry-run-output/live-sequence-diagram.svg`) before writing the
+real implementation, confirming a naive `<g>...</g>` scan found only 6 of
+the real 12 actor-box groups (missed every top row) versus a rect+text-
+adjacency pattern that doesn't depend on the wrapper at all, which found
+all 12. The sequence legend caption also gained a clause explaining the new
+convention ("dashed participant = pre-existing service"), with the footer's
+minimum width now accounting for the caption's own estimated text width so
+a narrow diagram's footer can't clip it.
+
+**Live-verified three ways, not just via the 10 new/updated unit tests
+(228 -> 241 backend tests, `tsc --noEmit` clean):**
+
+1. A real end-to-end integration test through the actual Puppeteer/mermaid
+   harness (`tests/mermaid.test.ts`) — confirms the marker comment never
+   leaks into real rendered output and that the real rendered participant
+   boxes (not a hand-built stand-in) get tagged correctly.
+2. Re-ran `scripts/dry-run-live-sequence.ts` (real Anthropic call) after
+   the fix: the marker correctly named all 5 pre-existing services,
+   correctly excluded `checkoutController`, and the rendered screenshot
+   (before: a screenshot showing every participant box visually identical;
+   after: `checkoutController` solid/bright, the other five dashed/dimmed,
+   legend caption updated and legible) confirms the fix visually, not just
+   textually — before/after PNGs kept locally
+   (`scripts/.dry-run-output/quality-review-sequence-{baseline,after}.png`,
+   not committed, per this project's existing `.dry-run-output/`
+   convention — see item 31's own disclosure of this same tension).
+3. Re-ran `scripts/dry-run-live-sequence-disjoint.ts` (a different real
+   diff, the two-disjoint-new-calls scenario from item 27) specifically to
+   check for regressions on an adjacent feature: both separate highlight
+   `rect` blocks still render correctly, and the new participant-dashing
+   correctly applied to this diagram's own different set of pre-existing
+   services (`FraudCheckService`, `NotificationService`, `Payment`) without
+   disturbing the disjoint-highlight behavior at all — confirmed via a
+   fresh screenshot, not assumed from the source alone.
+
+Also re-ran `scripts/dry-run-live-scale.ts` (the flowchart-side stress
+test) after these changes, even though nothing in this item touches
+flowchart-specific code paths, purely to confirm the shared parts of
+mermaid.ts (the new import, the renderMermaidToSvg pipeline edit) caused no
+regression there: node count still exactly 10, canonical subgraph titles
+intact, pub/sub warning still present and amber.
+
+**Deliberately conservative in one place, matching this file's established
+pattern**: if EVERY declared participant comes back with no changed-
+evidence (most likely meaning the diff's changed files don't textually
+overlap ANY declared participant name at all, a real possible case, not
+just a classifier miss), the function is a no-op rather than marking 100%
+of participants "pre-existing" — that would erase the one signal this
+exists to add (which one is new), not sharpen it. Covered by its own unit
+test.
+
+**Not attempted this round, left open**: this closes item 29's #10 finding,
+but does not itself change the score-gate status — no fresh adversarial
+review was run against this specific change. The remaining, previously-
+disclosed obstacles are unchanged: the ELK pub/sub-warning-edge routing
+(confirmed unfixable without forking the rendering dependency, item 20) and
+general reviewer skepticism toward self-reported verification evidence
+(item 31) — this item's response to the latter is citing exact live-call
+results, real regression checks against adjacent features, and file paths
+for the generated evidence, rather than only prose narration.
+
+**Payment/Stripe gate status: unchanged, still not met.** Score remains
+6/10 as of the last scored round (round 17); no fresh review was run this
+item. No billing/payment work has been done or will be done until a review
+clears >= 9.

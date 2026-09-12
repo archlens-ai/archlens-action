@@ -12,6 +12,7 @@ import {
   closeUnclosedSequenceBlocks,
   reconcileDatastoreNodeLabels,
   canonicalizeSubgraphTitles,
+  annotatePreexistingParticipants,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
 import type { QuotaStore } from "./quota.js";
@@ -250,6 +251,20 @@ export async function handleGenerateRequest(
     // flowcharts and for any sequence diagram that isn't fully new (see
     // annotateFullyNewSequence's own docstring for the exact conditions).
     mermaidSource = annotateFullyNewSequence(mermaidSource);
+
+    // Deterministic backstop, round-16 finding (CLAUDE.md item 29 #10): a
+    // sequenceDiagram's diff-awareness was message-level only (the `rect`
+    // highlight) — every participant box rendered identically whether it's
+    // the file this diff actually implements or a pre-existing service
+    // merely called into. Appends a `%%` marker comment (mermaid drops
+    // comments before render, so this never reaches the SVG directly)
+    // naming which participants have no changed-evidence from the diff
+    // itself; mermaid.ts's renderMermaidToSvg reads it back out of this
+    // same source string and dims/dashes those specific participant boxes.
+    // A no-op for flowchart and for any sequence diagram with no genuine
+    // mix of new/pre-existing participants (see the function's own
+    // docstring for why an all-or-nothing split is deliberately skipped).
+    mermaidSource = annotatePreexistingParticipants(mermaidSource, body.files);
 
     const { svg } = await deps.render(mermaidSource);
     const svgUrl = await deps.storeSvg(hash, svg);

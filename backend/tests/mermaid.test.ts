@@ -7,8 +7,10 @@ import {
   injectFlowRunnersCss,
   renderMermaidToSvg,
   styleWarningEdgeLabels,
+  styleContextParticipants,
   validateMermaidSyntax,
 } from "../lib/mermaid.js";
+import { CONTEXT_PARTICIPANTS_MARKER } from "../lib/diff-classify.js";
 
 describe("validateMermaidSyntax", () => {
   it("accepts a valid flowchart", () => {
@@ -435,6 +437,102 @@ describe("styleWarningEdgeLabels", () => {
   });
 });
 
+describe("styleContextParticipants", () => {
+  // Shape confirmed against a real rendered sequence diagram (see the
+  // function's own docstring in mermaid.ts): each participant gets TWO
+  // independent rect+text pairs (a header row and a footer row), the rect
+  // carrying a `name="<Participant>"` attribute mermaid emits regardless of
+  // which row it is, and the two rows are wrapped by DIFFERENT `<g>`
+  // shapes (an attributed `<g id="root-N" ...>` for the top row, a bare
+  // `<g>` for the bottom) — confirmed live, which is exactly why this
+  // function's own regex deliberately never keys off the `<g>` wrapper at
+  // all, only the rect+text adjacency.
+  function actorGroup(name: string, row: "top" | "bottom", wrapped: boolean): string {
+    const rect = `<rect x="0" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" name="${name}" rx="3" ry="3" class="actor actor-${row}"></rect>`;
+    const text = `<text x="75" y="32" class="actor actor-box" style="text-anchor: middle;"><tspan x="75" dy="0">${name}</tspan></text>`;
+    return wrapped ? `<g id="root-1" data-et="participant" data-id="${name}">${rect}${text}</g>` : `<g>${rect}${text}</g>`;
+  }
+
+  function sampleSvg(marker: string | null): string {
+    const source = [
+      "sequenceDiagram",
+      "  actor User",
+      "  participant checkoutController",
+      "  participant CartService",
+      ...(marker ? [marker] : []),
+    ].join("\n");
+    void source; // built for realism/parity with real generate-handler wiring; not passed directly below
+    const svg =
+      '<svg id="my-svg" viewBox="0 0 100 200">' +
+      actorGroup("checkoutController", "top", true) +
+      actorGroup("CartService", "top", true) +
+      actorGroup("checkoutController", "bottom", false) +
+      actorGroup("CartService", "bottom", false) +
+      "</svg>";
+    return svg;
+  }
+
+  it("returns the SVG completely unchanged when the source has no context-participants marker", () => {
+    const svg = sampleSvg(null);
+    const source = "sequenceDiagram\n  participant checkoutController\n  participant CartService";
+    expect(styleContextParticipants(svg, source)).toBe(svg);
+  });
+
+  it("tags both rows (top and bottom, differently-wrapped <g>s alike) of a marked participant", () => {
+    const svg = sampleSvg(null);
+    const source = `sequenceDiagram\n${CONTEXT_PARTICIPANTS_MARKER} CartService\n`;
+    const result = styleContextParticipants(svg, source);
+    // Both CartService rects (top and bottom) get the new class...
+    const cartRectMatches = result.match(/<rect[^>]*name="CartService"[^>]*class="[^"]*"/g) ?? [];
+    expect(cartRectMatches).toHaveLength(2);
+    for (const m of cartRectMatches) expect(m).toContain("archlens-context-participant");
+    // ...and its text labels too.
+    const cartTextMatches = result.match(/<text[^>]*class="[^"]*"[^>]*>\s*<tspan[^>]*>CartService/g) ?? [];
+    expect(cartTextMatches.length).toBeGreaterThan(0);
+    for (const m of cartTextMatches) expect(m).toContain("archlens-context-participant");
+    // The un-marked participant must NOT be tagged.
+    const checkoutRectMatches = result.match(/<rect[^>]*name="checkoutController"[^>]*class="[^"]*"/g) ?? [];
+    expect(checkoutRectMatches).toHaveLength(2);
+    for (const m of checkoutRectMatches) expect(m).not.toContain("archlens-context-participant");
+  });
+
+  it("injects exactly one !important CSS rule dimming/dashing the tagged class", () => {
+    const svg = sampleSvg(null);
+    const source = `sequenceDiagram\n${CONTEXT_PARTICIPANTS_MARKER} CartService\n`;
+    const result = styleContextParticipants(svg, source);
+    const styleMatches = result.match(/<style>[^<]*archlens-context-participant[^<]*<\/style>/g);
+    expect(styleMatches).toHaveLength(1);
+    expect(styleMatches?.[0]).toContain("stroke-dasharray:4 3 !important");
+    expect(styleMatches?.[0]).toContain("fill:#161b22 !important");
+  });
+
+  it("marks multiple participants named in a comma-separated marker", () => {
+    const svg =
+      '<svg id="my-svg" viewBox="0 0 100 200">' +
+      actorGroup("CartService", "bottom", false) +
+      actorGroup("PaymentGateway", "bottom", false) +
+      "</svg>";
+    const source = `sequenceDiagram\n${CONTEXT_PARTICIPANTS_MARKER} CartService,PaymentGateway\n`;
+    const result = styleContextParticipants(svg, source);
+    expect(result).toContain('name="CartService" rx="3" ry="3" class="actor actor-bottom archlens-context-participant"');
+    expect(result).toContain('name="PaymentGateway" rx="3" ry="3" class="actor actor-bottom archlens-context-participant"');
+  });
+
+  it("returns the SVG unchanged when a marked name matches no rendered participant rect", () => {
+    const svg = sampleSvg(null);
+    const source = `sequenceDiagram\n${CONTEXT_PARTICIPANTS_MARKER} SomeNameNotInThisDiagram\n`;
+    expect(styleContextParticipants(svg, source)).toBe(svg);
+  });
+
+  it("preserves the rest of the SVG content untouched", () => {
+    const svg = sampleSvg(null);
+    const source = `sequenceDiagram\n${CONTEXT_PARTICIPANTS_MARKER} CartService\n`;
+    const result = styleContextParticipants(svg, source);
+    expect(result).toContain("</svg>");
+    expect(result).toContain('viewBox="0 0 100 200"');
+  });
+});
+
 describe("appendLegend", () => {
   const sampleSvg =
     '<svg id="my-svg" viewBox="0 0 100 200" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="200"/></svg>';
@@ -702,6 +800,38 @@ describe("renderMermaidToSvg (integration)", () => {
     expect(svg).not.toContain(`href="#${removedEdgeId}"`); // no animated runner on either removed-touching edge
     expect(svg).not.toContain(`href="#${liveIntoRemovedEdgeId}"`);
     expect(svg).toContain(`href="#${activeEdgeId}"`); // the fully-live edge still gets one
+  }, 30_000);
+
+  // Round-16 fix (CLAUDE.md item 29 #10), end to end through the real
+  // Puppeteer harness: diff-classify.ts's annotatePreexistingParticipants()
+  // appends a `%% archlens:context-participants ...` marker comment to the
+  // raw mermaid SOURCE before it ever reaches this function — confirms two
+  // things a unit test on a synthetic SVG string alone can't: (1) mermaid's
+  // real parser genuinely drops the marker comment before rendering (it
+  // must never leak into the visible diagram as literal text), and (2) the
+  // marked participant's REAL rendered box (not a hand-built stand-in) gets
+  // dimmed/dashed while the unmarked one keeps its normal solid styling.
+  it("dims/dashes a sequence participant marked pre-existing via the context-participants comment, end to end", async () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant checkoutController",
+      "  participant CartService",
+      "  checkoutController->>CartService: getCart(userId)",
+      "%% archlens:context-participants CartService",
+    ].join("\n");
+    const { svg } = await renderMermaidToSvg(source, {
+      executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH,
+    });
+    expect(svg).not.toContain("archlens:context-participants"); // the marker itself never leaks into rendered output
+    expect(svg).toContain("archlens-context-participant");
+    expect(svg).toContain("stroke-dasharray:4 3 !important");
+    const cartRects = svg.match(/<rect[^>]*name="CartService"[^>]*>/g) ?? [];
+    const checkoutRects = svg.match(/<rect[^>]*name="checkoutController"[^>]*>/g) ?? [];
+    expect(cartRects.length).toBeGreaterThan(0);
+    expect(checkoutRects.length).toBeGreaterThan(0);
+    for (const r of cartRects) expect(r).toContain("archlens-context-participant");
+    for (const r of checkoutRects) expect(r).not.toContain("archlens-context-participant");
+    expect(svg).toContain("dashed participant = pre-existing service"); // legend caption updated too
   }, 30_000);
 
   // "dont use white color at all, make it black" -- the diagram previously

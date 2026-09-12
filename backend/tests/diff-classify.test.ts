@@ -12,6 +12,8 @@ import {
   closeUnclosedSequenceBlocks,
   reconcileDatastoreNodeLabels,
   canonicalizeSubgraphTitles,
+  annotatePreexistingParticipants,
+  CONTEXT_PARTICIPANTS_MARKER,
   type DiffPatchFile,
 } from "../lib/diff-classify.js";
 
@@ -1350,5 +1352,95 @@ describe("reconcileDatastoreNodeLabels", () => {
       "OrderInvService -->|writes| Tables",
     ].join("\n");
     expect(reconcileDatastoreNodeLabels(source)).toBe(source);
+  });
+});
+
+describe("annotatePreexistingParticipants", () => {
+  const files: DiffPatchFile[] = [
+    { filename: "src/controllers/checkoutController.ts", status: "modified", patch: "+  await CartService.getCart(userId);" },
+    { filename: "src/routes/checkout.ts", status: "modified", patch: "+router.post('/checkout', handler);" },
+  ];
+
+  it("marks participants with no changed-evidence, leaving the genuinely-touched one alone", () => {
+    const source = [
+      "sequenceDiagram",
+      "  actor User",
+      "  participant checkoutController",
+      "  participant CartService",
+      "  participant PaymentGateway",
+      "  User->>checkoutController: POST /checkout",
+      "  checkoutController->>CartService: getCart(userId)",
+      "  checkoutController->>PaymentGateway: charge(total)",
+    ].join("\n");
+    const result = annotatePreexistingParticipants(source, files);
+    const markerLine = result.split("\n").find((l) => l.startsWith(CONTEXT_PARTICIPANTS_MARKER));
+    expect(markerLine).toBeDefined();
+    const marked = markerLine!.slice(CONTEXT_PARTICIPANTS_MARKER.length).trim().split(",");
+    expect(marked.sort()).toEqual(["CartService", "PaymentGateway"].sort());
+    // The genuinely-touched participant is never marked.
+    expect(marked).not.toContain("checkoutController");
+  });
+
+  it("never considers an `actor` declaration -- only `participant` -- even if its name would match", () => {
+    // "checkoutController" would tokenize to changed-evidence, but as an
+    // `actor` it represents something OUTSIDE the codebase per llm.ts's own
+    // convention, so it must never be scanned as a candidate at all (not
+    // marked context, not left unmarked as "changed" either -- simply
+    // ignored, the same as the real function treats every actor line). A
+    // real `participant checkoutRoutes` is included alongside it so the
+    // mix isn't degenerate (all-context would be a no-op per the function's
+    // own conservative rule, tested separately below) -- this isolates the
+    // actor-exclusion behavior specifically.
+    const source = [
+      "sequenceDiagram",
+      "  actor checkoutController",
+      "  participant checkoutRoutes",
+      "  participant CartService",
+      "  participant PaymentGateway",
+      "  checkoutController->>checkoutRoutes: POST /checkout",
+      "  checkoutRoutes->>CartService: getCart(userId)",
+      "  checkoutRoutes->>PaymentGateway: charge(total)",
+    ].join("\n");
+    const result = annotatePreexistingParticipants(source, files);
+    const markerLine = result.split("\n").find((l) => l.startsWith(CONTEXT_PARTICIPANTS_MARKER));
+    expect(markerLine).toBeDefined();
+    const marked = markerLine!.slice(CONTEXT_PARTICIPANTS_MARKER.length).trim().split(",");
+    expect(marked.sort()).toEqual(["CartService", "PaymentGateway"].sort());
+    // Confirms the actor line was never even considered a candidate: it
+    // never appears in the marker (correct), and specifically not because
+    // it happened to match as "changed" -- there is no way to distinguish
+    // "excluded" from "matched" from the marker alone, which is exactly
+    // why this is asserted as its own dedicated case.
+    expect(marked).not.toContain("checkoutController");
+  });
+
+  it("is a no-op for flowchart", () => {
+    const source = ['flowchart TD', '  A["a"]'].join("\n");
+    expect(annotatePreexistingParticipants(source, files)).toBe(source);
+  });
+
+  it("is a no-op when every participant has changed-evidence", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant checkoutController",
+      "  participant checkout",
+      "  checkoutController->>checkout: route(req)",
+    ].join("\n");
+    expect(annotatePreexistingParticipants(source, files)).toBe(source);
+  });
+
+  it("is a no-op when NO participant has changed-evidence, rather than marking everyone (would erase the signal, not sharpen it)", () => {
+    const source = [
+      "sequenceDiagram",
+      "  participant CartService",
+      "  participant PaymentGateway",
+      "  CartService->>PaymentGateway: charge(total)",
+    ].join("\n");
+    expect(annotatePreexistingParticipants(source, files)).toBe(source);
+  });
+
+  it("is a no-op when there are no `participant` declarations at all", () => {
+    const source = ["sequenceDiagram", "  actor User", "  User->>User: noop"].join("\n");
+    expect(annotatePreexistingParticipants(source, files)).toBe(source);
   });
 });

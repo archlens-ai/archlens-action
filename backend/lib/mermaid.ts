@@ -4,6 +4,8 @@ import { dirname, join, normalize } from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { CONTEXT_PARTICIPANTS_MARKER } from "./diff-classify.js";
+
 const require = createRequire(import.meta.url);
 
 const ALLOWED_DECLARATIONS = [/^flowchart\s+(TD|LR|BT|RL)\b/i, /^sequenceDiagram\b/i];
@@ -263,7 +265,15 @@ const LEGEND_CAPTION = "solid = changed by this PR  ·  dashed = existing contex
 // convention from color alone. Exact rgba values matched to what the
 // SYSTEM_PROMPT actually instructs the model to emit, so this caption is
 // never describing a color the diagram doesn't use.
-const SEQUENCE_LEGEND_CAPTION = "blue highlight = new flow or steps added by this PR";
+// Round-16 addition (CLAUDE.md item 29 #10): the caption now also explains
+// the dashed-participant convention styleContextParticipants() applies,
+// the same way the flowchart caption explains solid-vs-dashed nodes —
+// otherwise a reviewer has no on-diagram explanation for why some
+// participant boxes look dimmed. Left as a single caption line (not two
+// separate legend rows) since sequence diagrams' legend footer is
+// deliberately minimal — see appendSequenceLegend()'s own docstring.
+const SEQUENCE_LEGEND_CAPTION =
+  "blue highlight = new flow or steps added by this PR  ·  dashed participant = pre-existing service";
 
 /**
  * Applies ArchLens's fixed visual identity to already-validated Mermaid
@@ -479,7 +489,16 @@ function appendSequenceLegend(svg: string): string {
   const fontSize = 12;
   const outerPadding = 14;
 
-  const newWidth = Math.max(width, 320);
+  // Round-16 fix: the caption grew (see SEQUENCE_LEGEND_CAPTION's own
+  // comment) to also explain the dashed-participant convention, long
+  // enough that a narrow sequence diagram (few participants) could
+  // overflow a footer sized only to the diagram's own width — this floor
+  // guarantees the footer is always at least as wide as the caption text
+  // itself needs, the same reasoning appendLegend()'s wrapping logic
+  // exists for on the flowchart side, just simpler since this footer is
+  // always exactly one line.
+  const captionWidth = estTextWidth(SEQUENCE_LEGEND_CAPTION, fontSize) + outerPadding * 2;
+  const newWidth = Math.max(width, captionWidth, 320);
   const legendHeight = rowHeight + outerPadding * 2;
   const newHeight = height + legendHeight;
 
@@ -778,6 +797,90 @@ export function styleWarningEdgeLabels(svg: string): string {
 
   const warningStyle = `<style>.${WARNING_LABEL_CLASS},.${WARNING_LABEL_CLASS} tspan{fill:#d29922 !important;}</style>`;
   return tagged.replace(/(<svg[^>]*>)/, `$1${warningStyle}`);
+}
+
+const CONTEXT_PARTICIPANT_CLASS = "archlens-context-participant";
+const CONTEXT_PARTICIPANTS_MARKER_RE = new RegExp(
+  `${CONTEXT_PARTICIPANTS_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+([^\\n]+)`
+);
+
+// Matches one rendered participant's box rect (`name="X"` identifies WHICH
+// participant, confirmed against a real render), immediately followed by
+// its label `<text>` when one is present. Deliberately does NOT anchor on
+// the surrounding `<g>` wrapper -- confirmed against a real render that
+// mermaid wraps the diagram's TOP header row in an attributed `<g
+// id="root-N" data-et="participant" ...>` but its BOTTOM row in a bare
+// `<g>` with no attributes at all, so a regex keyed on the wrapper shape
+// would need two different patterns and still be one layout tweak away
+// from silently stopping matching one of the two rows. The rect+text
+// adjacency itself is stable across both rows and is all this needs.
+const ACTOR_RECT_RE =
+  /<rect\b([^>]*)\bname="([^"]*)"([^>]*)\bclass="actor([^"]*)"([^>]*)><\/rect>(<text\b[^>]*\bclass="actor[^"]*"[^>]*>(?:(?!<\/text>)[\s\S])*?<\/text>)?/g;
+
+/**
+ * Render-side counterpart to diff-classify.ts's
+ * annotatePreexistingParticipants() -- see that function's own docstring
+ * for the round-16 finding this fixes (CLAUDE.md item 29 #10: sequence
+ * diagrams give no visual distinction between a participant this diff
+ * actually implements and one it merely calls into). That function can't
+ * touch the diagram's own syntax (sequenceDiagram has no per-participant
+ * `class` mechanism), so it appends a `%% archlens:context-participants
+ * Name1,Name2` comment instead -- mermaid's parser silently drops `%%`
+ * comments before they ever reach the rendered SVG (confirmed: the marker
+ * text itself never appears anywhere in mmdc/mermaid.render()'s output),
+ * so this reads it back out of the pre-render SOURCE text, not the SVG,
+ * and uses the same visual language flowchart's own `*Context` categories
+ * already established: dashed border, dimmed fill, dimmed text -- so a
+ * reviewer who's already learned that convention from the flowchart legend
+ * doesn't have to learn a second one for sequence diagrams.
+ *
+ * Deliberately narrow about what "no match" means: if a marked name
+ * doesn't correspond to any actually-rendered actor rect (defensive -- the
+ * marker and the real diagram should never disagree, but this file's own
+ * established pattern throughout is to no-op rather than inject unused
+ * CSS when a marker fails to correlate with real rendered structure), this
+ * returns the SVG completely untouched rather than adding a stylesheet
+ * with nothing to select.
+ */
+export function styleContextParticipants(svg: string, source: string): string {
+  const markerMatch = CONTEXT_PARTICIPANTS_MARKER_RE.exec(source);
+  if (!markerMatch) {
+    return svg;
+  }
+  const names = new Set(
+    markerMatch[1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  if (names.size === 0) {
+    return svg;
+  }
+
+  let anyTagged = false;
+  const tagged = svg.replace(
+    ACTOR_RECT_RE,
+    (full, preName: string, name: string, postName: string, actorSuffix: string, rectRest: string, textTag?: string) => {
+      if (!names.has(name)) return full;
+      anyTagged = true;
+      const newRect = `<rect${preName}name="${name}"${postName}class="actor${actorSuffix} ${CONTEXT_PARTICIPANT_CLASS}"${rectRest}></rect>`;
+      const newText = textTag
+        ? textTag.replace(/\bclass="actor([^"]*)"/, (_m, rest: string) => `class="actor${rest} ${CONTEXT_PARTICIPANT_CLASS}"`)
+        : "";
+      return newRect + newText;
+    }
+  );
+
+  if (!anyTagged) {
+    return svg; // marked names never matched a real rendered actor rect -- don't inject unused CSS
+  }
+
+  const style =
+    `<style>` +
+    `rect.${CONTEXT_PARTICIPANT_CLASS}{fill:#161b22 !important;stroke-dasharray:4 3 !important;opacity:0.85 !important;}` +
+    `text.${CONTEXT_PARTICIPANT_CLASS},text.${CONTEXT_PARTICIPANT_CLASS} tspan{fill:#8b949e !important;}` +
+    `</style>`;
+  return tagged.replace(/(<svg[^>]*>)/, `$1${style}`);
 }
 
 // Matches just the opening `<path ...>` tag, regardless of whether it's
@@ -1273,13 +1376,23 @@ export async function renderMermaidToSvg(
     // applyBoldGlowStyling (shares its <style> !important precedent) but
     // is otherwise independent of the flow-runner/legend steps below.
     const withWarningStyling = styleWarningEdgeLabels(styled);
+    // Round-16 fix (CLAUDE.md item 29 #10): dims/dashes any sequence
+    // participant diff-classify.ts's annotatePreexistingParticipants()
+    // marked as pre-existing (not touched by this diff) — reads the
+    // `%% archlens:context-participants ...` marker back out of the raw
+    // SOURCE text (mermaid's own parser drops `%%` comments before they
+    // ever reach rendered output, so they never appear here otherwise), not
+    // the SVG. A no-op for flowchart and for any sequence diagram where
+    // annotatePreexistingParticipants() found nothing worth marking.
+    const withParticipantStyling =
+      diagramType === "sequence" ? styleContextParticipants(withWarningStyling, source) : withWarningStyling;
     const flowAnimation = opts.flowAnimation ?? "none";
     const withRunners =
       diagramType === "flowchart" && flowAnimation !== "none"
         ? flowAnimation === "css"
-          ? injectFlowRunnersCss(withWarningStyling)
-          : injectFlowRunners(withWarningStyling)
-        : withWarningStyling;
+          ? injectFlowRunnersCss(withParticipantStyling)
+          : injectFlowRunners(withParticipantStyling)
+        : withParticipantStyling;
     return { svg: appendLegend(withRunners, diagramType) };
   } finally {
     if (browser) await browser.close();
