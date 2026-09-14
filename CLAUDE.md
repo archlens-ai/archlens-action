@@ -2417,3 +2417,86 @@ Anurag's own instruction to report the honest result before any
 deployment/Marketplace/billing work proceeds. **The standing payment gate
 is unchanged: no billing/payment work has been done or will be done until
 a review clears >= 9.**
+
+## 34. Round 18 adversarial review (2026-09-14) — 6/10, unchanged. Fifth consecutive round at this score despite item 33's real fix; a different, next-tier gap identified
+
+Ran the fresh, context-free review promised at the end of item 33, against
+two newly regenerated, correctly-rendered screenshots
+(`evidence/round-18-review/flowchart-current.png`,
+`evidence/round-18-review/sequence-current.png` — both produced via
+`scripts/dry-run-live-scale.ts` / `dry-run-live-sequence.ts`, real
+Anthropic calls, screenshotted via `scripts/screenshot-svg.mjs`'s real-
+Chromium `<img>`-embed method, not `sharp`, after `sharp` produced a
+misleading washed-out false negative for the sequence diagram — the same
+librsvg trap already documented in item 8, caught before it could
+contaminate this review's input rather than after).
+
+**Scored 6/10 — the fifth consecutive round at this exact score (rounds
+14-17 plus this one), despite item 33's ELK routing fix being real,
+verified, and specifically the thing the last four rounds kept
+converging on.** The review did not re-raise the box/ladder artifact at
+all — independent confirmation the item-33 fix addressed what those
+rounds were actually complaining about. Instead it found a different,
+next-tier problem:
+
+1. **(Top finding) The single highest-value edge in the flowchart — the
+   pub/sub warning (`EventBus -.->|subscribes to refund.issued ⚠ no
+   publish edge...|`) — still requires tracing by eye**, not because of
+   the box/ladder artifact (gone), but because POLYLINE routing sends a
+   genuine back-edge on a long perimeter-hugging loop up the right margin
+   and across the top. This is exactly the already-disclosed, accepted
+   trade-off item 20/33 called "a genuine back edge will still be the
+   visually longest edge in the diagram" — re-confirmed as real by a
+   reviewer encountering it fresh, not a new defect.
+2. **New, real, not previously flagged this specifically: "calls" and
+   "publishes" render as the same solid blue line — only "subscribes"
+   gets distinct (dotted) styling.** A reviewer scanning line style alone
+   can't tell a guaranteed direct call from a fire-and-hope-something-
+   listens publish without reading every label's text — undercutting the
+   at-a-glance value the diagram exists to provide, on exactly the
+   distinction (sync vs. async) most relevant to the kind of bug this
+   product's own pitch is built around catching. Verified directly
+   against the real screenshot before accepting it: true.
+3. **New: in the sequence-diagram example, the diff-highlight reads as
+   flat/uniform, not "some messages are highlighted."** Checked the
+   actual generated source (`scripts/.dry-run-output/live-sequence-
+   comment.md`) before accepting this: it's real but narrower than the
+   review stated — only message 1 of 12 (`User->>checkoutController: POST
+   /checkout`) sits outside the `rect rgba(88, 166, 255, 0.3)` block; the
+   other 11 are inside it. This is NOT the fully-100%-new case item 22's
+   `annotateFullyNewSequence` banner targets (that only fires when
+   literally every message is covered), so the banner correctly did not
+   fire — but with 11/12 messages highlighted, the "highlighted vs.
+   plain" contrast has almost nothing to contrast against in practice,
+   which is a real, previously-undocumented edge case adjacent to item
+   22's fully-new-flow problem: not 100% new, but new enough that the
+   highlight stops being informative. Not fixed this round — flagged for
+   whoever next touches sequence-diagram diff-awareness, alongside item
+   29 #10's already-shipped participant-dashing (item 32) as a partial,
+   not complete, answer to "which parts of this flow are new."
+4. Minor, lower severity: an incidental edge crossing near the shared
+   datastore node (`InventoryService`/`OrderService` "writes" edges) —
+   the same category of trade-off item 33 already disclosed, not a new
+   class of problem; and the pub/sub warning label's own length reads as
+   "a paragraph pasted on the canvas" next to 2-3-word labels elsewhere.
+
+**Verified the review's claims myself before writing this up, not taken
+on faith**: viewed both screenshots directly, and independently confirmed
+finding 3 was real but over-stated relative to the actual mermaid source
+(11/12 messages highlighted, not "no visible highlight at all") before
+recording it here — worth being precise about, since overstating a
+reviewer's finding would be exactly the kind of unverified claim this
+project's own discipline exists to catch.
+
+**Status toward the score >= 9 gate: still not met, 6/10.** Per Anurag's
+own explicit instruction ("run round 18 and report the honest score
+before any deployment, Marketplace listing, or billing work proceeds"),
+reporting back now rather than continuing to iterate unprompted. Honest
+framing: item 33's fix was real and the review round confirms it (the
+thing four straight rounds complained about didn't come up again), but
+the score didn't move, because a new layer of findings (edge-semantic
+line-style ambiguity; near-fully-new-flow highlight legibility) was
+sitting right behind it — consistent with this project's whole history:
+fixing the top-ranked complaint reliably surfaces the next one rather
+than closing out the score. **No billing/payment/deployment/Marketplace
+work has been done or will be done until a review clears >= 9.**
