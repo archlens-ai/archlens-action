@@ -912,4 +912,85 @@ describe("renderMermaidToSvg (integration)", () => {
       await browser.close();
     }
   }, 30_000);
+
+  // Item 33 (2026-09-14): item 20 disclosed, as confirmed-unfixable-
+  // without-forking-the-dependency, a "box/ladder artifact" -- edges from
+  // two different subgraphs converging on a node OUTSIDE any subgraph get
+  // routed with sharp right-angle (90-degree) bends that visually read as
+  // a box wrapping unrelated subgraphs, rather than a direct line. Fixed
+  // by patching (via patch-package) both @mermaid-js/layout-elk's
+  // createRootElkGraph() and mermaid core's own config sanitizer to admit
+  // an `edgeRouting: POLYLINE` frontmatter option neither previously
+  // exposed -- see buildElkFrontmatter's own comment for the full
+  // investigation. This test reproduces item 20's exact described shape
+  // (two subgraphs' nodes both feeding a node outside every subgraph) and
+  // asserts the routed edges contain NO exact-90-degree bends -- the
+  // precise geometric signature of the box artifact, confirmed via
+  // scripts/elk-investigation/: the old ORTHOGONAL default produced 2 and
+  // 4 exact 90-degree bends on this shape; POLYLINE produces zero.
+  it("routes edges converging on a node outside any subgraph without the item-20 box/ladder artifact (no exact 90-degree bends)", async () => {
+    const source = [
+      'flowchart TD',
+      'subgraph Logic["Business Logic"]',
+      '  OrderSvc["OrderService"]',
+      '  RefundSvc["RefundService"]',
+      'end',
+      'subgraph Data["Data Layer"]',
+      '  DB[("orders table")]',
+      'end',
+      'Worker["RefundWorker"]',
+      'OrderSvc --> DB',
+      'RefundSvc --> DB',
+      'OrderSvc -->|"publishes order.created"| Worker',
+      'RefundSvc -->|"publishes refund.issued"| Worker',
+      'class OrderSvc,RefundSvc logic',
+      'class DB datastore',
+      'class Worker externalContext',
+    ].join("\n");
+
+    const { svg } = await renderMermaidToSvg(source, {
+      executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH,
+    });
+
+    const rightAngleBendCounts: Record<string, number> = {};
+    for (const target of ["OrderSvc_Worker", "RefundSvc_Worker"]) {
+      const tagMatch = svg.match(
+        new RegExp(`<path[^>]*data-id="[^"]*${target}[^"]*"[^>]*>`)
+      );
+      if (!tagMatch) {
+        throw new Error(`expected to find edge path for ${target}`);
+      }
+      const pointsMatch = tagMatch[0].match(/data-points="([^"]*)"/);
+      const encodedPoints = pointsMatch?.[1];
+      if (!encodedPoints) {
+        throw new Error(`expected data-points on ${target}`);
+      }
+      const points = JSON.parse(
+        Buffer.from(encodedPoints, "base64").toString()
+      ) as { x: number; y: number }[];
+
+      let bends = 0;
+      for (let i = 1; i < points.length - 1; i++) {
+        const a = points[i - 1];
+        const b = points[i];
+        const c = points[i + 1];
+        if (!a || !b || !c) continue;
+        const v1x = b.x - a.x;
+        const v1y = b.y - a.y;
+        const v2x = c.x - b.x;
+        const v2y = c.y - b.y;
+        const ang1 = (Math.atan2(v1y, v1x) * 180) / Math.PI;
+        const ang2 = (Math.atan2(v2y, v2x) * 180) / Math.PI;
+        let diff = Math.abs(ang2 - ang1);
+        if (diff > 180) diff = 360 - diff;
+        if (Math.abs(diff - 90) < 5) bends++;
+      }
+      rightAngleBendCounts[target] = bends;
+    }
+
+    expect(rightAngleBendCounts).toEqual({
+      OrderSvc_Worker: 0,
+      RefundSvc_Worker: 0,
+    });
+  }, 30_000);
 });

@@ -1,0 +1,38 @@
+flowchart TD
+subgraph API["API Layer"]
+  OrdersAPI["Orders routes/controller"]
+  RefundsAPI["Refunds routes/controller"]
+end
+class OrdersAPI,RefundsAPI endpoint
+
+subgraph Logic["Business Logic"]
+  OrderService["OrderService"]
+  InventoryService["InventoryService"]
+  RefundService["RefundService"]
+  RefundWorker["refundWorker"]
+end
+class OrderService,InventoryService,RefundService,RefundWorker logic
+
+  DB[("orders / refunds tables")]
+class DB datastore
+
+subgraph External["External Services"]
+EventBus["EventBus"]
+PaymentGateway["PaymentGateway"]
+NotificationService["NotificationService"]
+end
+class External externalRegion
+class EventBus,PaymentGateway,NotificationService externalContext
+
+OrdersAPI -->|calls| OrderService
+OrdersAPI -->|calls| InventoryService
+OrdersAPI -->|calls| RefundService
+RefundsAPI -->|calls| RefundService
+
+OrderService -->|writes| DB
+RefundService -->|writes/reads| DB
+RefundService -->|calls| PaymentGateway
+
+OrderService -->|publishes order.created| EventBus
+EventBus -.-> |subscribes to refund.issued ⚠ no publish edge for this event shown in this diagram| RefundWorker
+RefundWorker -->|calls| NotificationService

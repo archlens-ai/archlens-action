@@ -2275,3 +2275,145 @@ for the generated evidence, rather than only prose narration.
 6/10 as of the last scored round (round 17); no fresh review was run this
 item. No billing/payment work has been done or will be done until a review
 clears >= 9.
+
+## 33. The ELK "box/ladder" edge-routing artifact (item 20, disclosed as confirmed-unfixable-without-forking) actually gets fixed, plus the round-17 evidence-convention gap (2026-09-14)
+
+Anurag's instruction: rather than launch/publish/monetize at the current
+6/10 (four rounds plateaued, 14-17), spend real effort on the two specific
+things the plateau kept converging on instead of chasing the score number
+mechanically again — the ELK edge-routing limitation (item 20) and round
+17's evidentiary-rigor finding (self-reported verification isn't
+independently checkable without real artifacts on disk) — then run a
+fresh review and report the honest result before any deployment/
+Marketplace/billing work. Both are now addressed; full detail below.
+
+### The ELK routing fix
+
+Item 20's own investigation was right about the WRAPPER: read
+`@mermaid-js/layout-elk`'s compiled `render-*.mjs` chunk directly and
+confirmed `createRootElkGraph()` hardcodes every ELK layout option except
+exactly the 7 `config.elk.*` keys it explicitly reads (`nodePlacementStrategy`,
+`nodePlacementAlignment`, `mergeEdges`, `forceNodeModelOrder`,
+`considerModelOrder`, `cycleBreakingStrategy`, plus `keepEntryNodeOnTop`
+read elsewhere) — no `edgeRouting` passthrough existed, matching item 20's
+own citation of this exact function. What item 20 didn't try: actually
+patching the compiled function, having called forking the dependency "out
+of scope" at the time. This round did.
+
+**Two patches, both applied via `patch-package`** (new devDependency;
+`patches/*.patch`, applied automatically on `npm install` via a new
+`postinstall` script) — reversible, visible in a diff, and survive a clean
+install, unlike an ad-hoc node_modules edit:
+
+1. `@mermaid-js/layout-elk` — `createRootElkGraph()`'s `layoutOptions`
+   object literal gains `"elk.edgeRouting": I.config.elk?.edgeRouting`
+   (plus two spacing keys, wired through but unused for now).
+2. `mermaid` itself — patch 1 ALONE had zero effect: rendered output was
+   byte-identical regardless of what `edgeRouting` value the frontmatter
+   set. Root cause, found by direct inspection, not guessed: mermaid
+   core's own `sanitizeDirective()` deletes any frontmatter config key
+   that isn't ALSO a key somewhere in mermaid's own default config object
+   (a runtime `Object.keys()` walk building an allow-list, not a schema
+   file) — `edgeRouting` doesn't exist in the default `elk: {...}` object,
+   so it was silently stripped before patch 1's code ever saw it.
+   Confirmed the mechanism, not just the symptom: overriding an
+   ALREADY-allowed key (`nodePlacementStrategy`) produced real output
+   differences immediately, while `edgeRouting` alone produced a
+   byte-identical SVG until this second patch added `edgeRouting:void 0`
+   (and the two spacing keys) to mermaid core's own default `elk` object,
+   which is all `sanitizeDirective`'s allow-list needs to admit a key —
+   the *value* still comes from the frontmatter, `void 0` just registers
+   the key name as legitimate.
+
+**Verified two ways, both with real render output, not assumed from the
+patch alone:**
+
+1. A minimal synthetic repro (`scripts/elk-investigation/repro.ts`, no
+   LLM call — isolates the layout-engine variable) matching item 20's own
+   described shape: two subgraphs' nodes both feeding a node OUTSIDE every
+   subgraph. Under the previous default (`ORTHOGONAL`), the two feeding
+   edges route with exact 90-degree bends — the geometric signature of the
+   "box wrapping a subgraph" complaint, confirmed by decoding each edge's
+   `data-points` attribute and measuring bend angles programmatically, not
+   eyeballing pixels: 2 and 4 exact 90-degree bends respectively. Under
+   `POLYLINE` (the candidate this round landed on, after also trying and
+   rejecting `SPLINES` — it fixed the box shape but introduced its own
+   kink artifact near the target node, confirmed visually, screenshot kept
+   as `synthetic-repro-SPLINES-rejected.png`), both edges drop to ZERO
+   90-degree bends, replaced by direct ~67-68-degree diagonal segments.
+2. ONE real Anthropic call (`scripts/elk-investigation/live-compare.ts`)
+   against the same 10-file scale fixture every prior ELK tuning round
+   used, rendering the SAME real generated mermaid source through both
+   settings so layout is the only variable. The real
+   `EventBus -.->|subscribes to refund.issued ⚠ no publish edge...|
+   refundWorker` back-edge — the exact edge round 14 described as "loops
+   around most of the canvas margin" — goes from a wide box hugging the
+   diagram's right perimeter (`ORTHOGONAL`) to a direct diagonal path
+   (`POLYLINE`), confirmed via side-by-side screenshot.
+
+**Full backend test suite re-run with `POLYLINE` forced on via env
+override before it was made the real default: 241/241 passing, zero
+regressions.** A new permanent regression test was added
+(`tests/mermaid.test.ts`, "routes edges converging on a node outside any
+subgraph without the item-20 box/ladder artifact") that renders the
+synthetic repro shape and asserts zero exact-90-degree bends on the two
+converging edges — sanity-checked to actually catch the regression it's
+meant to catch: temporarily reverted the default back to `ORTHOGONAL` and
+confirmed the test fails (2 and 2 bends, not 0 and 0) before restoring
+`POLYLINE` and confirming it passes again. 241 -> 242 backend tests,
+`tsc --noEmit` clean on both workspaces (two real strict-mode errors in
+the new test's array/regex-match indexing were caught by `tsc` and fixed
+properly — narrowed with explicit `if (!x) throw`/`continue` guards rather
+than non-null assertions, matching this codebase's existing style).
+
+**Honestly disclosed trade-off, not hidden**: `POLYLINE` does introduce a
+minor incidental crossing between two otherwise-unrelated edges in the
+real scale-fixture render (`OrderService`'s `writes` and `publishes`
+edges cross near a point neither is target of) — a real, if much smaller,
+visual cost than the box artifact it replaces, and the same category of
+"two edges can require tracing by eye" limitation item 20 itself already
+disclosed as inherent to auto-layout, not a new class of problem. Zoomed
+in on the exact pixels before concluding this was real and not a
+rendering illusion — it is a genuine incidental crossing, disclosed rather
+than swept aside.
+
+**Still open / disclosed, not fixed by this item**: the two spacing keys
+threaded through (`edgeSpacing`, `edgeNodeSpacing`) are wired but unused —
+`POLYLINE` alone was sufficient for the confirmed cases, so they weren't
+needed this round; kept available for a future case that needs them rather
+than removed. `keepEntryNodeOnTop`, the 7th key item 20 cited, was not
+investigated this round (no known defect currently points at it).
+
+### The round-17 evidence-convention gap
+
+Round 17 (item 31) scored 6/10 partly because self-reported verification
+wasn't independently checkable — real screenshots/outputs existed only
+under `scripts/.dry-run-output/`, gitignored project-wide as regenerable
+scratch, so a fresh checkout (or a future review round) had nothing on
+disk to actually open, only prose. A partial fix landed at the time (3
+live-call outputs saved locally) but was explicitly left gitignored,
+"session-local proof, not something a fresh checkout of the repo will
+have" — flagged, not resolved.
+
+**Fixed properly this round**: a new `evidence/` directory at the repo
+root, checked into git (unlike `.dry-run-output/`, which stays gitignored
+scratch — the two are deliberately different: `evidence/` is for the
+specific files a CLAUDE.md claim actually points to as proof, not every
+intermediate experiment). `evidence/README.md` states the rule. Two
+subfolders populated:
+
+- `evidence/item-33-elk-routing/` — the decisive before/after PNGs and the
+  real scale-fixture's raw mermaid source (`.mmd`) backing this item's own
+  claims above — a reviewer can open these directly rather than trust the
+  writeup.
+- `evidence/item-30-naming-stability/` — the 3 real live-call comment
+  bodies round 17 itself flagged as narrated-but-not-inspectable, moved
+  out of the gitignored scratch folder retroactively, closing that exact
+  disclosed gap rather than leaving it as a standing caveat.
+
+**Status toward the score >= 9 gate**: NOT yet re-scored as of writing
+this item — a fresh round 18 follows immediately after this commit, per
+Anurag's own instruction to report the honest result before any
+deployment/Marketplace/billing work proceeds. **The standing payment gate
+is unchanged: no billing/payment work has been done or will be done until
+a review clears >= 9.**

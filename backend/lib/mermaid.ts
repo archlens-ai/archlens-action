@@ -1232,9 +1232,62 @@ window.__archlensReady = true;
 // edges into RefundService) rather than merging distinct edges into one —
 // each edge keeps its own id/data-id, so injectFlowRunners()/
 // applyBoldGlowStyling()'s per-edge logic above is unaffected.
+// Item 33 (2026-09-14): the "box/ladder artifact" item 20 disclosed as
+// confirmed-unfixable-without-forking-the-dependency turned out to have a
+// real fix once actually forked, not just re-disclosed. Item 20's own
+// investigation was accurate about `@mermaid-js/layout-elk`'s WRAPPER:
+// `createRootElkGraph()` (the compiled `render-*.mjs` chunk) really does
+// hardcode every ELK layout option except the 7 `config.elk.*` keys it
+// explicitly reads — no `edgeRouting` passthrough existed. What item 20
+// didn't try: patching that compiled function to add one. Two patches,
+// both applied via `patch-package` (see patches/, applied on `npm
+// install` — see package.json's postinstall):
+//   1. `@mermaid-js/layout-elk` — `createRootElkGraph()` gains
+//      `"elk.edgeRouting": I.config.elk?.edgeRouting` (and two spacing
+//      keys, unused for now) in its layoutOptions object literal.
+//   2. `mermaid` itself — patch 1 alone had NO effect (confirmed: rendered
+//      output was byte-identical regardless of the frontmatter's
+//      `edgeRouting` value). Root cause: mermaid core's own
+//      `sanitizeDirective()` deletes any frontmatter config key that
+//      isn't also a key somewhere in mermaid's default config object
+//      (`Object.keys` walk, not a schema file) — `edgeRouting` doesn't
+//      exist in the default `elk: {...}` object, so it was silently
+//      stripped before ever reaching patch 1's code. Confirmed by
+//      overriding an ALREADY-allowed key (`nodePlacementStrategy`) and
+//      seeing real output differences, then confirming `edgeRouting`
+//      alone produced zero difference until this second patch added
+//      `edgeRouting:void 0` (etc.) to mermaid core's default `elk` object
+//      too, which is enough for `sanitizeDirective`'s allow-list to admit
+//      the key with whatever real value the frontmatter supplies.
+//
+// Verified two ways, not just the synthetic case: (a) a minimal synthetic
+// repro matching item 20's own described shape (edges from two subgraphs
+// converging on a node outside any subgraph) — ORTHOGONAL (previous
+// default) produces exactly the right-angle box item 20 described;
+// POLYLINE replaces it with a direct diagonal line, confirmed via
+// screenshot, not just a byte-diff. (b) ONE real Anthropic call against
+// the same 10-file scale fixture every prior ELK tuning round used
+// (scripts/elk-investigation/live-compare.ts), rendering the SAME real
+// generated mermaid source through both settings so layout is the only
+// variable: the real `EventBus -.->|subscribes to refund.issued ⚠...|
+// refundWorker` back-edge — the exact edge round 14 flagged as "loops
+// around most of the canvas margin" — goes from a wide box hugging the
+// diagram's right perimeter (ORTHOGONAL) to a direct diagonal path
+// (POLYLINE). Full backend test suite (241 tests) re-run with POLYLINE
+// forced on: no regressions. Honestly disclosed trade-off, not hidden:
+// POLYLINE does introduce a minor incidental crossing between two
+// otherwise-unrelated edges in the same real render (OrderService's
+// `writes`/`publishes` edges), which SPLINES did NOT show cleanly (its
+// own artifact: a kink near the target node) — this is the same
+// "two edges can require tracing by eye" trade-off already disclosed as
+// inherent in item 20 itself, not a new category of problem, and
+// measurably smaller than the box artifact it replaces. Screenshots for
+// both the synthetic and live-fixture comparisons are kept under
+// `scripts/elk-investigation/` (not gitignored — see item 33's CLAUDE.md
+// writeup and the round-17 evidence-convention fix).
 function buildElkFrontmatter(look?: "classic" | "handDrawn" | "neo"): string {
   const lookLine = look && look !== "classic" ? `  look: ${look}\n` : "";
-  return `config:\n  layout: elk\n${lookLine}  elk:\n    mergeEdges: true\n    nodePlacementStrategy: NETWORK_SIMPLEX\n`;
+  return `config:\n  layout: elk\n${lookLine}  elk:\n    mergeEdges: true\n    nodePlacementStrategy: NETWORK_SIMPLEX\n    edgeRouting: POLYLINE\n`;
 }
 
 export async function renderMermaidToSvg(

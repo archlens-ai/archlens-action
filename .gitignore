@@ -6,3 +6,6 @@ coverage/
 .DS_Store
 scripts/.dry-run-output/
 backend/scripts/.dry-run-output/
+scripts/elk-investigation/*.svg
+scripts/elk-investigation/*.png
+scripts/elk-investigation/*.mmd
