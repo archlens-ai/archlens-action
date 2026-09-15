@@ -2500,3 +2500,86 @@ sitting right behind it — consistent with this project's whole history:
 fixing the top-ranked complaint reliably surfaces the next one rather
 than closing out the score. **No billing/payment/deployment/Marketplace
 work has been done or will be done until a review clears >= 9.**
+
+## 35. Round 18 finding #2 fixed: "calls" and "publishes" no longer render as the identical line (2026-09-15)
+
+Anurag's instruction: fix the cheapest, most concrete finding from round
+18 before deciding on the bigger methodology question — the fact that a
+direct call and an async publish rendered as the exact same solid blue
+line, with only the subscribe side of a pub/sub relationship ever getting
+a distinct treatment (item 26's dotted-arrow fix).
+
+**Fix, in `annotatePublishSubscribeEdges()` (`backend/lib/diff-
+classify.ts`):** publish-labeled edges (matched by the same
+`PUBLISH_LABEL_RE` this function already used for the no-publisher-warning
+logic) are now also restyled, to Mermaid's THICK arrow (`==>`) rather than
+another dotted line — deliberately a third, distinct visual weight (thin
+solid = direct call, thick solid = publish/emit, dotted = subscribe/
+conditional), so publish and subscribe stay visually distinct from EACH
+OTHER, not just from a plain call. No warning logic changes — this is
+purely a line-style fix. An edge whose label somehow matches both the
+subscribe and publish regexes (not a realistic real-world shape, nothing
+in the SYSTEM_PROMPT asks for it) is left on the subscribe/dotted path,
+since "conditional on external wiring" is the more important signal to
+preserve.
+
+**A second bug found and fixed applying the same lesson as items 14/16/19
+one more time**: the blanket `.flowchart-link{stroke-width:2.5px
+!important}` rule in `applyBoldGlowStyling()` (`backend/lib/mermaid.ts`)
+would have silently flattened a thick edge straight back to the same
+width as an ordinary call — the exact same class of bug the
+`edge-pattern-dotted` override already exists to prevent for subscribe
+edges, just for a different property. Fixed with a new
+`.edge-thickness-thick{stroke-width:4.5px !important;}` rule, declared
+right after the dotted-restoration rule.
+
+**A CSS-specificity trap avoided before it shipped, not found after**:
+the natural-looking selector would have been
+`.flowchart-link.edge-thickness-thick` (mirroring the existing
+`.flowchart-link.edge-pattern-dotted` rule) — but that 2-class selector
+has higher specificity than `REMOVED_EDGE_CLASS`'s single-class rule
+below it, which would let a thick-AND-removed edge (a publish edge that
+also happens to touch a node this PR deletes) win the stroke-width
+property over the removed-edge rule regardless of declaration order —
+exactly the "this connection reads as alive when it's actually gone"
+contradiction this file has fixed twice before. Deliberately used a
+single-class `.edge-thickness-thick` selector instead, matching
+`REMOVED_EDGE_CLASS`'s own specificity so declaration order (removed
+declared last) decides correctly. Worth noting the pre-existing
+`edge-pattern-dotted` rule actually already has this same latent
+imprecision (2-class selector, higher specificity than
+`REMOVED_EDGE_CLASS`) — in practice mostly harmless there since the only
+property they share is `stroke-dasharray`, and every other removed-edge
+property (color, opacity, no-glow) is untouched by the dotted rule; not
+fixed retroactively this round since it wasn't part of what round 18
+flagged, but noted here for whoever next touches this file.
+
+**Verified, not just unit-tested**: 245/245 backend tests pass (3 new:
+publish-edge thick-restyle, an idempotency check, and the same-edge-
+matches-both-regexes precedence case), `tsc --noEmit` clean. Existing
+tests that previously asserted a publish edge was left untouched were
+updated to assert the new thick-arrow output instead (they were testing
+the old, now-intentionally-changed behavior, not a regression). Re-ran
+the real 10-file scale fixture through the live pipeline (one real
+Anthropic call) and screenshotted it the correct way
+(`scripts/screenshot-svg.mjs`, real Chromium, not `sharp`): confirmed
+`OrderService ==> |publishes order.created| EventBus` in the raw
+generated source, confirmed `class="edge-thickness-thick ... flowchart-
+link"` with `stroke-width:4.5px` on the real rendered `<path>`, and
+confirmed visually that the publish edge into EventBus now reads
+noticeably heavier than the ordinary `calls`/`writes` edges around it,
+while the dotted subscribe edge and all `!important`-forced properties on
+other edges are unaffected. Evidence:
+`evidence/item-35-publish-edge-style/scale-fixture-after.png`.
+
+**Not attempted this round**: round 18's other finding (near-fully-new
+sequence-diagram highlight legibility) — per the earlier assessment, this
+one is narrower/single-instance and a clean fix isn't obvious without
+adding more visual noise than it removes; left alone unless a future
+round flags it again independently. No fresh adversarial review was run
+against this specific fix.
+
+**Status toward the score >= 9 gate**: unchanged, not re-scored this
+item — this was scoped to the specific finding, not to re-running the
+review loop. **No billing/payment/deployment/Marketplace work has been
+done or will be done until a review clears >= 9.**

@@ -703,6 +703,30 @@ function extractEventTopic(label: string, kind: "subscribe" | "publish"): string
  * sequenceDiagram, where this arrow-styling syntax doesn't apply and the
  * EventBus defect above was never observed (only the flowchart side of
  * this project's own live-scale stress test showed it).
+ *
+ * Round-18 finding (2026-09-14, CLAUDE.md item 34): a fresh adversarial
+ * review, run right after the ELK box/ladder routing artifact (item
+ * 20/33) was finally fixed, immediately found the next layer down: a
+ * "calls" edge and a "publishes" edge still rendered as the exact same
+ * solid blue line -- only the "subscribes" side of the relationship ever
+ * got a visually distinct treatment (the dotted restyle above). A
+ * reviewer scanning line style alone still couldn't tell "this definitely
+ * happens, synchronously" (a direct call) from "this definitely happens,
+ * but asynchronously, fire-and-forget" (a publish) without reading every
+ * label's text -- undercutting the at-a-glance value on exactly the
+ * sync-vs-async distinction most relevant to the class of bug this
+ * project's pub/sub hygiene checks exist to catch. Fixed the same way as
+ * the subscribe case: publish-labeled edges are now restyled too, to
+ * Mermaid's THICK arrow (`==>`) rather than another dotted line --
+ * deliberately a third, distinct visual weight (thin solid = direct call,
+ * thick solid = publish/emit, dotted = subscribe/conditional) rather than
+ * reusing dotted for both directions of a pub/sub relationship, which
+ * would have made publish and subscribe indistinguishable FROM EACH
+ * OTHER instead of just from a direct call. No no-publisher-style warning
+ * is added on the publish side -- a publish with zero subscribers in this
+ * diagram isn't the bug class this file's warnings target (only a
+ * subscribe with no matching publish is, since that's the "silently
+ * broken pipeline" shape); this is purely a visual-distinctness fix.
  */
 export function annotatePublishSubscribeEdges(source: string): string {
   const isFlowchart = /^flowchart\s+(TD|LR|BT|RL)\b/i.test(source.trim());
@@ -738,7 +762,13 @@ export function annotatePublishSubscribeEdges(source: string): string {
   }
 
   const subscribeEdges = edges.filter((e) => e.isSubscribe);
-  if (subscribeEdges.length === 0) {
+  // Deliberately excludes anything already caught by the subscribe branch
+  // above -- a label matching both regexes is not a realistic real-world
+  // shape (nothing in the SYSTEM_PROMPT asks for it), but if it ever
+  // happened, "conditional on external wiring" (dotted) is the more
+  // important signal to preserve than "definitely emits" (thick).
+  const publishEdges = edges.filter((e) => e.isPublish && !e.isSubscribe);
+  if (subscribeEdges.length === 0 && publishEdges.length === 0) {
     return source; // nothing to restyle or check -- don't touch the source at all
   }
 
@@ -806,6 +836,27 @@ export function annotatePublishSubscribeEdges(source: string): string {
 
     anyChange = true;
     const labelPart = newLabel !== null && newLabel !== undefined && newLabel !== "" ? `|${newLabel}| ` : "";
+    outLines[edge.lineIdx] =
+      `${indent}${srcId}${srcShape ?? ""} ${newArrow} ${labelPart}${tgtId}${tgtShape ?? ""}`;
+  }
+
+  // Round-18 fix (see this function's own docstring): restyle publish
+  // edges to a thick arrow, a third visual weight distinct from both a
+  // plain direct call (thin solid) and a subscribe relationship (dotted).
+  // No label/warning changes here -- purely a line-style fix.
+  for (const edge of publishEdges) {
+    const m = EVENT_EDGE_RE.exec(lines[edge.lineIdx]!)!;
+    const [, indent, srcId, srcShape, arrow, label, tgtId, tgtShape] = m;
+
+    // Already-thick (`==`) or already-dotted (`-.-`) arrows are left as-is
+    // -- same conservative precedent as the subscribe branch above: rare
+    // enough in real output that guessing a hybrid isn't worth the risk of
+    // producing invalid Mermaid syntax.
+    const newArrow = arrow!.startsWith("--") ? `==${arrow!.slice(2)}` : arrow!;
+    if (newArrow === arrow) continue; // nothing to change on this edge
+
+    anyChange = true;
+    const labelPart = label !== null && label !== undefined && label !== "" ? `|${label}| ` : "";
     outLines[edge.lineIdx] =
       `${indent}${srcId}${srcShape ?? ""} ${newArrow} ${labelPart}${tgtId}${tgtShape ?? ""}`;
   }

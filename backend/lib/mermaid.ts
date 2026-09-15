@@ -720,6 +720,19 @@ function labelIndicatesRemoval(dataId: string | null, edgeLabels: Map<string, st
  * subscribe relationship today, and "dotted = not a direct/guaranteed
  * connection" is the same visual language this fix wants regardless of
  * which future feature might also reach for a dotted arrow.
+ *
+ * Round-18 fix (2026-09-14, CLAUDE.md item 34): `annotatePublishSubscribeEdges`
+ * (diff-classify.ts) now also restyles publish-labeled edges to Mermaid's
+ * THICK arrow syntax (`==>`), so "calls," "publishes," and "subscribes"
+ * are three visually distinct line weights instead of two -- but the
+ * blanket `.flowchart-link{stroke-width:2.5px !important}` rule below
+ * would otherwise flatten a thick edge back to the exact same width as an
+ * ordinary call, the same class of bug the `edge-pattern-dotted` fix above
+ * already caught for subscribe edges (a blanket `!important` override
+ * silently erasing a more-specific style Mermaid itself emitted). Fixed
+ * the same way: a rule keyed on Mermaid's own `edge-thickness-thick`
+ * class, declared after the general rule, restoring a visibly heavier
+ * stroke.
  */
 export function applyBoldGlowStyling(svg: string): string {
   const nodeCategories = extractNodeCategories(svg);
@@ -735,6 +748,18 @@ export function applyBoldGlowStyling(svg: string): string {
     `text{font-weight:700 !important;}` +
     `.flowchart-link{stroke-width:2.5px !important;stroke-dasharray:none !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.flowchart-link.edge-pattern-dotted{stroke-dasharray:6 4 !important;}` +
+    // Deliberately a single-class selector, NOT `.flowchart-link.edge-
+    // thickness-thick` -- that would give it higher CSS specificity than
+    // REMOVED_EDGE_CLASS below (a single-class selector itself), which
+    // would let a thick-AND-removed edge win the stroke-width property
+    // over the removed-edge rule regardless of declaration order, exactly
+    // the "this connection reads as alive when it's actually gone"
+    // contradiction this file has fixed twice before (see
+    // touchesRemovedNode's docstring). Equal specificity here means
+    // source order decides, and REMOVED_EDGE_CLASS is declared after this
+    // rule, so it correctly wins for a removed edge that also happens to
+    // be publish-styled.
+    `.edge-thickness-thick{stroke-width:4.5px !important;}` +
     `.${REMOVED_EDGE_CLASS}{stroke:#f85149 !important;stroke-width:1.5px !important;stroke-dasharray:3 3 !important;filter:none !important;opacity:0.7;}` +
     `.messageLine0,.messageLine1{stroke-width:2.2px !important;filter:url(#${GLOW_FILTER_ID});}` +
     `.edgeLabel{font-weight:700 !important;}` +

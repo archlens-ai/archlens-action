@@ -977,8 +977,9 @@ describe("annotatePublishSubscribeEdges", () => {
     expect(result).not.toContain("not shown as published anywhere in this diagram");
     // The subscribe edge is still restyled dotted even though it's not warned.
     expect(result).toContain('Worker -.-> |subscribes to "refund.issued"');
-    // The publish edge itself is left as a normal solid arrow.
-    expect(result).toContain('Refunds -->|publishes "refund.issued"| Bus');
+    // The publish edge is restyled to a thick arrow (round-18 fix), a third
+    // visual weight distinct from both a plain call and a subscribe.
+    expect(result).toContain('Refunds ==> |publishes "refund.issued"| Bus');
   });
 
   it("warns on a topic mismatch even when the bus DOES publish something -- just not the event being subscribed to (real bug: found running a live Anthropic call, publishes order.created and separately subscribes to refund.issued on the same EventBus node)", () => {
@@ -995,8 +996,9 @@ describe("annotatePublishSubscribeEdges", () => {
     // A node-level-only check would have wrongly stayed silent here, since
     // Bus does appear in a publish edge -- just for a different event.
     expect(result).not.toContain("not shown as published anywhere in this diagram");
-    // The publish edge itself is untouched.
-    expect(result).toContain("OrderService -->|publishes order.created| Bus");
+    // The publish edge's label/warning logic is untouched -- only its arrow
+    // style changes (round-18 fix: thick, not another dotted line).
+    expect(result).toContain("OrderService ==> |publishes order.created| Bus");
   });
 
   it("does not warn when the subscribed and published topic names match", () => {
@@ -1034,14 +1036,42 @@ describe("annotatePublishSubscribeEdges", () => {
     expect(result).toContain("not shown as published anywhere in this diagram");
   });
 
-  it("does not restyle or warn on a publish-only edge", () => {
+  it("restyles a publish-only edge to a thick arrow but adds no warning (round-18 fix)", () => {
     const source = [
       "flowchart TD",
       '  Refunds["RefundService"]',
       '  Bus["EventBus"]',
       '  Refunds -->|publishes "refund.issued"| Bus',
     ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toContain('Refunds ==> |publishes "refund.issued"| Bus');
+    expect(result).not.toMatch(/Refunds\s+-->/);
+    expect(result).not.toContain("⚠");
+  });
+
+  it("leaves an already-thick publish edge's arrow alone", () => {
+    const source = [
+      "flowchart TD",
+      '  Refunds["RefundService"]',
+      '  Bus["EventBus"]',
+      '  Refunds ==>|publishes "refund.issued"| Bus',
+    ].join("\n");
     expect(annotatePublishSubscribeEdges(source)).toBe(source);
+  });
+
+  it("does not restyle a publish edge that is also matched as a subscribe edge (subscribe takes precedence)", () => {
+    // Not a realistic real-world label (SYSTEM_PROMPT never asks for both
+    // words on one edge), but the function must still make a deterministic
+    // choice rather than double-restyle -- dotted (subscribe) wins.
+    const source = [
+      "flowchart TD",
+      '  A["A"]',
+      '  Bus["EventBus"]',
+      "  A -->|publishes and subscribes to x| Bus",
+    ].join("\n");
+    const result = annotatePublishSubscribeEdges(source);
+    expect(result).toMatch(/A\s+-\.->/);
+    expect(result).not.toMatch(/A\s+==>/);
   });
 
   it("returns the source unchanged when there are no subscribe-labeled edges at all", () => {
@@ -1066,6 +1096,18 @@ describe("annotatePublishSubscribeEdges", () => {
   it("is a no-op for sequenceDiagram", () => {
     const source = "sequenceDiagram\n  A->>B: subscribes to refund.issued";
     expect(annotatePublishSubscribeEdges(source)).toBe(source);
+  });
+
+  it("is idempotent for publish-edge thick-arrow restyling too", () => {
+    const source = [
+      "flowchart TD",
+      '  Refunds["RefundService"]',
+      '  Bus["EventBus"]',
+      '  Refunds -->|publishes "refund.issued"| Bus',
+    ].join("\n");
+    const once = annotatePublishSubscribeEdges(source);
+    const twice = annotatePublishSubscribeEdges(once);
+    expect(twice).toBe(once);
   });
 });
 
