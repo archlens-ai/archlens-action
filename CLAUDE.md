@@ -2583,3 +2583,58 @@ against this specific fix.
 item — this was scoped to the specific finding, not to re-running the
 review loop. **No billing/payment/deployment/Marketplace work has been
 done or will be done until a review clears >= 9.**
+
+## 36. The score >= 9 gate is explicitly lifted — releasing v1 now (2026-09-16)
+
+**Anurag's explicit instruction, overriding items 27/34/35's gate on the
+record**: "never ever again forget this, use this same international
+payment for archlens and lets release the first version of product, we
+will keep improving, as we get users or data and time." Confirmed
+separately that "full release" means: publicly discoverable (a real
+GitHub org/repo, eventually a GitHub Marketplace listing), and teams can
+actually pay for private-repo/org usage (real billing, not just a free
+public-repo tier).
+
+**This is a deliberate, informed reversal, not an oversight** — flagged
+once, plainly, before proceeding: five straight adversarial-review rounds
+(14-18) scored 6/10 on the same review, including after two real,
+verified fixes (item 33's ELK routing, item 35's calls-vs-publishes
+styling) — the score plateau reflects the review keeps finding a next-
+tier legibility problem right behind whatever was just fixed, not that
+the fixes were fake. Shipping now means the first real PR comments
+external users and reviewers see are the 6/10 version. Anurag's call,
+made with that tradeoff stated: ship v1, iterate from real usage and
+user feedback instead of chasing the review score further in the
+abstract. **The >= 9 gate from items 27/34/35 is retired. It does not
+apply to anything after this entry.**
+
+**Three infra decisions locked in for this release** (each required
+Anurag's input — they get hardcoded into files, not inferable):
+- GitHub hosting: a **new GitHub org** (not Anurag's personal account) —
+  working name `archlens-ai`, pending Anurag actually creating it (Claude
+  cannot create GitHub accounts/orgs).
+- Deploy target: a **new, separate Vercel project** for `backend/` — not
+  reusing Kith's `kithmedaienterprise` team, keeping ArchLens infra and
+  billing/usage separate from Kith's, matching the isolated-Supabase-
+  project convention already established in `.env.example`.
+- Billing rail and currency: **Razorpay** (Kith's existing, freshly-
+  international-activated account — see the Kith International Cards
+  activation work done the same day), billing in **USD** as originally
+  priced ($12/mo Solo, $29/mo Team), not converted to INR. This is a new
+  build, not a swap: Stripe was **never actually provisioned** (`.env`
+  confirms `STRIPE_SECRET_KEY` etc. were always empty) — the entire
+  billing layer (`billing.ts`, `checkout.ts`, `checkout-handler.ts`,
+  `webhook-handler.ts` + tests) was written Stripe-shaped but nothing
+  Stripe was ever live, so there is no live billing/subscriptions to
+  migrate. Being rewritten for Razorpay's Plans/Subscriptions API next
+  (see whichever item documents that work).
+
+**What was already real before this decision, worth being honest about
+since it changes the size of the remaining work**: Supabase and the
+Anthropic API key are provisioned with live keys in `backend/.env`. The
+Action, diagram pipeline, and marketing copy are written and tested
+(245 backend tests passing at the time of this entry). What was **not**
+real: no git remote (this repo has never been pushed anywhere), no
+GitHub org/repo, no Vercel project, no Razorpay billing integration, no
+Marketplace listing. "Full release" is a from-zero infra launch even
+though the product code itself is far along.
