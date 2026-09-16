@@ -641,7 +641,7 @@
         <p>Before a diff ever reaches an LLM, the GitHub Action strips it down to structural signal — changed route paths, schema/migration names, function and class identifiers — and discards comments, log lines, and full file bodies. That compressed payload, not your source code, is what's sent for diagram generation.</p>
         <ul>
           <li><strong>Account data:</strong> GitHub org/repo identifiers, billing email, and subscription tier, stored in Supabase.</li>
-          <li><strong>Processors:</strong> Anthropic and OpenAI (diagram generation), Stripe or Razorpay (billing only — we never see full card details), Supabase (storage), Vercel (hosting).</li>
+          <li><strong>Processors:</strong> Anthropic and OpenAI (diagram generation), Razorpay (billing only — we never see full card details), Supabase (storage), Vercel (hosting).</li>
           <li><strong>Caching:</strong> generated diagrams are cached by content hash to avoid re-billing identical diffs; cached output can be cleared on request.</li>
           <li><strong>Never collected:</strong> your end users' personal data, database contents, secrets, or credentials.</li>
         </ul>

@@ -11,21 +11,21 @@ describe("generateApiKey", () => {
 });
 
 describe("resolvePlan / buildPriceMap", () => {
-  it("maps a known Stripe price ID to its plan", () => {
-    const map = buildPriceMap({ STRIPE_PRICE_SOLO: "price_solo", STRIPE_PRICE_TEAM: "price_team" });
-    expect(resolvePlan("price_solo", map)).toBe("solo");
-    expect(resolvePlan("price_team", map)).toBe("team");
+  it("maps a known Razorpay plan ID to its plan", () => {
+    const map = buildPriceMap({ RAZORPAY_PLAN_SOLO: "plan_solo", RAZORPAY_PLAN_TEAM: "plan_team" });
+    expect(resolvePlan("plan_solo", map)).toBe("solo");
+    expect(resolvePlan("plan_team", map)).toBe("team");
   });
 
-  it("returns null for an unrecognized price ID", () => {
-    const map = buildPriceMap({ STRIPE_PRICE_SOLO: "price_solo" });
-    expect(resolvePlan("price_unknown", map)).toBeNull();
+  it("returns null for an unrecognized plan ID", () => {
+    const map = buildPriceMap({ RAZORPAY_PLAN_SOLO: "plan_solo" });
+    expect(resolvePlan("plan_unknown", map)).toBeNull();
   });
 });
 
 describe("buildProvisioningRecord", () => {
   it("creates a new org id when none exists yet", () => {
-    const record = buildProvisioningRecord({ plan: "solo", stripeCustomerId: "cus_1" });
+    const record = buildProvisioningRecord({ plan: "solo", razorpaySubscriptionId: "sub_1" });
     expect(record.orgId).toMatch(/^org_/);
     expect(record.plan).toBe("solo");
   });
@@ -33,7 +33,7 @@ describe("buildProvisioningRecord", () => {
   it("reuses an existing org id when provided", () => {
     const record = buildProvisioningRecord({
       plan: "team",
-      stripeCustomerId: "cus_1",
+      razorpaySubscriptionId: "sub_1",
       existingOrgId: "org_existing",
     });
     expect(record.orgId).toBe("org_existing");

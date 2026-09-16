@@ -2,7 +2,7 @@
   "name": "@archlens/backend",
   "private": true,
   "version": "0.1.0",
-  "description": "ArchLens backend — Vercel serverless functions: diagram generation proxy, quota/license gate, Stripe billing.",
+  "description": "ArchLens backend — Vercel serverless functions: diagram generation proxy, quota/license gate, Razorpay billing.",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
@@ -15,7 +15,7 @@
     "@supabase/supabase-js": "^2.45.4",
     "mermaid": "^11.14.0",
     "puppeteer-core": "^24.43.0",
-    "stripe": "^16.9.0"
+    "razorpay": "^2.9.8"
   },
   "devDependencies": {
     "@vercel/node": "^3.2.11",

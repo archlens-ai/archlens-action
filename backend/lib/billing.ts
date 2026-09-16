@@ -12,26 +12,31 @@ export function generateApiKey(): string {
 }
 
 export interface PriceMap {
-  [stripePriceId: string]: Plan;
+  [razorpayPlanId: string]: Plan;
 }
 
 /**
- * Maps a Stripe Price ID (from checkout.session.completed /
- * customer.subscription.* webhook events) to an internal plan name. Kept as
- * a pure function so the webhook handler's provisioning logic is testable
- * without a live Stripe account — just pass in the price ID map from env.
+ * Maps a Razorpay Plan ID (from `subscription.*` webhook events —
+ * `payload.subscription.entity.plan_id`) to an internal plan name. Kept as a
+ * pure function so the webhook handler's provisioning logic is testable
+ * without a live Razorpay account — just pass in the plan-id map from env.
+ *
+ * Unlike Stripe's `checkout.session.completed`, Razorpay's subscription
+ * webhooks include `plan_id` directly on the event payload — no second API
+ * call (Stripe needed `checkout.sessions.listLineItems`) is required to
+ * find out which plan a subscription is on.
  */
-export function resolvePlan(stripePriceId: string, priceMap: PriceMap): Plan | null {
-  return priceMap[stripePriceId] ?? null;
+export function resolvePlan(razorpayPlanId: string, priceMap: PriceMap): Plan | null {
+  return priceMap[razorpayPlanId] ?? null;
 }
 
 export function buildPriceMap(env: {
-  STRIPE_PRICE_SOLO?: string;
-  STRIPE_PRICE_TEAM?: string;
+  RAZORPAY_PLAN_SOLO?: string;
+  RAZORPAY_PLAN_TEAM?: string;
 }): PriceMap {
   const map: PriceMap = {};
-  if (env.STRIPE_PRICE_SOLO) map[env.STRIPE_PRICE_SOLO] = "solo";
-  if (env.STRIPE_PRICE_TEAM) map[env.STRIPE_PRICE_TEAM] = "team";
+  if (env.RAZORPAY_PLAN_SOLO) map[env.RAZORPAY_PLAN_SOLO] = "solo";
+  if (env.RAZORPAY_PLAN_TEAM) map[env.RAZORPAY_PLAN_TEAM] = "team";
   return map;
 }
 
@@ -39,24 +44,33 @@ export interface OrgRecord {
   orgId: string;
   apiKey: string;
   plan: Plan;
-  stripeCustomerId: string;
+  razorpaySubscriptionId: string;
 }
 
 /**
- * Pure provisioning decision: given a completed checkout session's plan and
- * customer ID, decide what row to write. Actual Supabase upsert lives in
- * api/webhook/stripe.ts — this function contains the business logic so it
+ * Pure provisioning decision: given an activated subscription's plan and
+ * subscription id, decide what row to write. Actual Supabase upsert lives in
+ * api/webhook/razorpay.ts — this function contains the business logic so it
  * can be unit tested without a database.
+ *
+ * Keyed on the Razorpay *subscription* id, not a customer id: Razorpay only
+ * populates `customer_id` on the subscription entity after the customer
+ * completes the authorization payment, and even then it identifies the
+ * underlying payment method/contact rather than "this org's subscription"
+ * the way Stripe's Customer object does. The subscription id is present
+ * from the very first webhook and is already 1:1 with one paying org under
+ * this product's plan model (one Solo or Team subscription per org), so it's
+ * the simpler and more reliable correlation key.
  */
 export function buildProvisioningRecord(params: {
   plan: Plan;
-  stripeCustomerId: string;
+  razorpaySubscriptionId: string;
   existingOrgId?: string;
 }): OrgRecord {
   return {
     orgId: params.existingOrgId ?? `org_${randomBytes(8).toString("hex")}`,
     apiKey: generateApiKey(),
     plan: params.plan,
-    stripeCustomerId: params.stripeCustomerId,
+    razorpaySubscriptionId: params.razorpaySubscriptionId,
   };
 }

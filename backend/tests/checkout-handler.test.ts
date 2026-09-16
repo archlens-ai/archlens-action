@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleCheckoutRequest, type CheckoutDeps } from "../lib/checkout-handler.js";
 
-const ENV = { STRIPE_PRICE_SOLO: "price_solo_123", STRIPE_PRICE_TEAM: "price_team_456" };
+const ENV = { RAZORPAY_PLAN_SOLO: "plan_solo_123", RAZORPAY_PLAN_TEAM: "plan_team_456" };
 
 function fakeDeps(overrides: Partial<CheckoutDeps> = {}): CheckoutDeps {
   return {
-    createCheckoutSession: vi.fn().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/cs_test_123" }),
+    createSubscription: vi.fn().mockResolvedValue({ url: "https://rzp.io/i/abc123" }),
     ...overrides,
   };
 }
@@ -27,40 +27,40 @@ describe("handleCheckoutRequest", () => {
     expect(result.status).toBe(400);
   });
 
-  it("creates a checkout session for the solo plan with the correct price id", async () => {
-    const createCheckoutSession = vi.fn().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/cs_test_solo" });
-    const result = await handleCheckoutRequest("POST", { plan: "solo", email: "a@b.com" }, ENV, fakeDeps({ createCheckoutSession }));
+  it("creates a subscription for the solo plan with the correct plan id", async () => {
+    const createSubscription = vi.fn().mockResolvedValue({ url: "https://rzp.io/i/solo123" });
+    const result = await handleCheckoutRequest("POST", { plan: "solo", email: "a@b.com" }, ENV, fakeDeps({ createSubscription }));
     expect(result.status).toBe(200);
-    expect(result.body.url).toBe("https://checkout.stripe.com/c/pay/cs_test_solo");
-    expect(createCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ priceId: "price_solo_123", email: "a@b.com" })
+    expect(result.body.url).toBe("https://rzp.io/i/solo123");
+    expect(createSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ planId: "plan_solo_123", email: "a@b.com" })
     );
   });
 
-  it("creates a checkout session for the team plan with the correct price id", async () => {
-    const createCheckoutSession = vi.fn().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/cs_test_team" });
-    const result = await handleCheckoutRequest("POST", { plan: "team" }, ENV, fakeDeps({ createCheckoutSession }));
+  it("creates a subscription for the team plan with the correct plan id", async () => {
+    const createSubscription = vi.fn().mockResolvedValue({ url: "https://rzp.io/i/team456" });
+    const result = await handleCheckoutRequest("POST", { plan: "team" }, ENV, fakeDeps({ createSubscription }));
     expect(result.status).toBe(200);
-    expect(createCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({ priceId: "price_team_456" }));
+    expect(createSubscription).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan_team_456" }));
   });
 
   it("defaults the redirect URLs to archlens.dev when ARCHLENS_APP_URL is unset", async () => {
-    const createCheckoutSession = vi.fn().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/x" });
-    await handleCheckoutRequest("POST", { plan: "solo" }, ENV, fakeDeps({ createCheckoutSession }));
-    const call = createCheckoutSession.mock.calls[0]![0];
+    const createSubscription = vi.fn().mockResolvedValue({ url: "https://rzp.io/i/x" });
+    await handleCheckoutRequest("POST", { plan: "solo" }, ENV, fakeDeps({ createSubscription }));
+    const call = createSubscription.mock.calls[0]![0];
     expect(call.successUrl).toContain("https://archlens.dev/dashboard");
     expect(call.cancelUrl).toContain("https://archlens.dev/pricing");
   });
 
   it("honors a configured ARCHLENS_APP_URL for redirect URLs", async () => {
-    const createCheckoutSession = vi.fn().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/x" });
+    const createSubscription = vi.fn().mockResolvedValue({ url: "https://rzp.io/i/x" });
     await handleCheckoutRequest(
       "POST",
       { plan: "solo" },
       { ...ENV, ARCHLENS_APP_URL: "https://app.archlens.dev" },
-      fakeDeps({ createCheckoutSession })
+      fakeDeps({ createSubscription })
     );
-    const call = createCheckoutSession.mock.calls[0]![0];
+    const call = createSubscription.mock.calls[0]![0];
     expect(call.successUrl).toContain("https://app.archlens.dev/dashboard");
   });
 });

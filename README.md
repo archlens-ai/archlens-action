@@ -20,7 +20,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: archlens/archlens-action@v1
+      - uses: archlens-ai/archlens-action@v1
         with:
           archlens-api-key: ${{ secrets.ARCHLENS_API_KEY }} # not required on public repos
 ```
@@ -33,7 +33,7 @@ it entirely on a public repo to use the shared, rate-limited free-tier key.
 | Path | What |
 |---|---|
 | `action/` | The GitHub Action — diff extraction, HTTP client, PR comment poster. Ships as a single bundled `dist/index.js` (no runtime `node_modules` needed). |
-| `backend/` | Vercel serverless functions — generation endpoint, quota/cache, Stripe billing. |
+| `backend/` | Vercel serverless functions — generation endpoint, quota/cache, Razorpay billing. |
 | `db/schema.sql` | Supabase schema: orgs, api_keys, usage_logs, diagram_cache. |
 | `scripts/dry-run.ts` | End-to-end smoke test wiring the real Action logic to the real backend logic over real HTTP, with a real `mmdc` render. |
 | `docs/ARCHITECTURE.md` | Full design doc and the reasoning behind every non-obvious decision. |
@@ -45,7 +45,7 @@ it entirely on a public repo to use the shared, rate-limited free-tier key.
 npm install
 
 npm run lint    # tsc --noEmit, both workspaces
-npm test        # vitest, both workspaces (84 tests)
+npm test        # vitest, both workspaces (264 tests)
 npm run build   # bundles action/dist/index.js via @vercel/ncc
 npm run dry-run # full pipeline smoke test — needs a local Chromium; see below
 ```
@@ -75,15 +75,16 @@ no override is needed there.
 | `ARCHLENS_LLM_PROVIDER` | no | `anthropic` (default), or `openai`/`deepseek` opt-in |
 | `OPENAI_API_KEY` | only if provider=openai | Diagram generation |
 | `DEEPSEEK_API_KEY` | only if provider=deepseek | Diagram generation |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | yes | Billing |
-| `STRIPE_PRICE_SOLO`, `STRIPE_PRICE_TEAM` | yes | Maps Stripe Price IDs to plans |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | yes | Billing — runs through Kith's existing, internationally-activated Razorpay account, not a separate ArchLens merchant account |
+| `RAZORPAY_PLAN_SOLO`, `RAZORPAY_PLAN_TEAM` | yes | Maps Razorpay Plan IDs to internal plans |
 | `PUPPETEER_EXECUTABLE_PATH` | recommended | Points the render step at its Chromium binary |
 
 ## Status
 
 Core product logic (diff compression, generation pipeline, quota/caching,
-billing provisioning, PR commenting) is built and tested — 53+ passing
-tests plus a real end-to-end dry run. **Not yet done:** a live Supabase
-project, Stripe account, Anthropic API key, GitHub Marketplace listing, or
-any real distribution — see `docs/ARCHITECTURE.md` and `marketing/` for
-what's scoped versus what's live.
+billing provisioning, PR commenting) is built and tested — 264 passing
+tests plus a real end-to-end dry run. A live Supabase project and Anthropic
+API key are already provisioned. **Not yet done:** the public GitHub org
+this repo will live in, a deployed Vercel project, live Razorpay Plans, and
+a GitHub Marketplace listing — see `docs/ARCHITECTURE.md`, `CLAUDE.md`
+(item 36), and `marketing/` for what's scoped versus what's live.

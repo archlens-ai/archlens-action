@@ -13,13 +13,13 @@ create table if not exists api_keys (
   key text primary key,
   org_id text not null references orgs(id) on delete cascade,
   plan text not null check (plan in ('free', 'solo', 'team')),
-  stripe_customer_id text,
+  razorpay_subscription_id text,
   active boolean not null default true,
   used_this_month integer not null default 0,
   created_at timestamptz not null default now()
 );
 
-create index if not exists idx_api_keys_stripe_customer on api_keys (stripe_customer_id);
+create index if not exists idx_api_keys_razorpay_subscription on api_keys (razorpay_subscription_id);
 
 create table if not exists usage_logs (
   id uuid primary key default gen_random_uuid(),

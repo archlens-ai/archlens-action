@@ -2638,3 +2638,67 @@ real: no git remote (this repo has never been pushed anywhere), no
 GitHub org/repo, no Vercel project, no Razorpay billing integration, no
 Marketplace listing. "Full release" is a from-zero infra launch even
 though the product code itself is far along.
+
+## 37. Billing layer rewritten from Stripe to Razorpay Subscriptions (2026-09-16)
+
+Per item 36: `billing.ts`, `checkout-handler.ts`, `webhook-handler.ts`,
+`api/checkout.ts`, and `api/webhook/stripe.ts` (renamed `api/webhook/
+razorpay.ts`) rewritten for Razorpay's Plans/Subscriptions API. Kept the
+exact same architecture — pure, dependency-injected handlers separated
+from Vercel glue, unit-tested with genuinely valid signed test payloads
+and no live account — that the Stripe version already established; this
+was a provider swap, not a redesign.
+
+**Key differences from the Stripe version, each deliberate:**
+- Correlator key is the Razorpay **subscription id**, not a customer id
+  (`razorpay_subscription_id` column, replacing `stripe_customer_id`) —
+  Razorpay's `customer_id` on a subscription is only populated after
+  authorization completes and identifies the payment method/contact, not
+  "this org's subscription," where the subscription id is present from
+  the first webhook and already 1:1 with one paying org.
+- No second API call to resolve the plan: Razorpay's `subscription.
+  activated` payload includes `plan_id` directly, unlike Stripe's
+  `checkout.session.completed` (needed `checkout.sessions.listLineItems`).
+- Signature verification is plain HMAC-SHA256 (Razorpay's own
+  `validateWebhookSignature`) instead of Stripe's `stripe-signature`
+  scheme — tests sign with `node:crypto` directly since Razorpay's SDK,
+  unlike Stripe's, has no "generate a test signature" helper (only real
+  webhook senders need to sign; verification is what merchants do).
+- `subscription.halted` (retries exhausted) is the deactivation trigger,
+  `subscription.pending` (still retrying) is deliberately a no-op — same
+  reasoning the Stripe version used for `unpaid` vs. `past_due`, mapped
+  onto Razorpay's own subscription lifecycle events.
+- Razorpay's Subscription-create API has no `success_url`/`cancel_url`
+  parameters (Stripe Checkout Sessions do) — post-authorization redirect
+  for Razorpay subscriptions is an account-wide dashboard setting, not
+  per-request. `handleCheckoutRequest` still computes both URLs (kept for
+  interface parity and because the dashboard redirect should point at
+  `ARCHLENS_APP_URL`), but `api/checkout.ts` doesn't forward them to
+  Razorpay's actual API call.
+- `total_count: 120` (120 monthly cycles = 10 years) stands in for an
+  indefinite subscription — Razorpay requires a finite count, Stripe
+  doesn't. Canceling early is a normal, unaffected operation.
+
+**Verified, not just written:** `tsc --noEmit` clean across both
+workspaces; full test suite green — 246/246 backend tests (26 of them in
+billing/checkout/webhook specifically, up from 25 — one new test added
+for `subscription.paused`) and 18/18 action tests, 264 total. The 12
+mermaid-render integration tests that looked like failures on a bare run
+were pre-existing environment config (no `ARCHLENS_TEST_CHROMIUM_PATH`
+set in this shell), not a regression from this change — confirmed by
+re-running with a real Chromium binary path set and getting 246/246.
+
+**Not done, and deliberately not attempted in this item:** no
+`vercel.json` was added. `@vercel/node` is already a devDependency and
+Vercel's zero-config Node.js runtime auto-detects `api/*.ts` handlers and
+npm-workspaces monorepos without one; writing a guessed custom config
+that can't be verified from this sandbox (no live Vercel deploy access
+here) risks breaking a real deploy more than it helps. The Vercel project
+should be created with **Root Directory: `backend`**, and the required
+env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`,
+`ANTHROPIC_API_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
+`RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_PLAN_SOLO`, `RAZORPAY_PLAN_TEAM`,
+`PUPPETEER_EXECUTABLE_PATH`) set in the Vercel dashboard — see `backend/
+.env.example`. Also not done: no GitHub org, no Vercel project, no live
+Razorpay Plans, no Marketplace listing — these need Anurag directly (see
+the checklist handed back alongside this item).

@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import Stripe from "stripe";
+import Razorpay from "razorpay";
 import { buildPriceMap } from "../../lib/billing.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
-import { handleStripeWebhookRequest, type WebhookDeps } from "../../lib/webhook-handler.js";
+import { handleRazorpayWebhookRequest, type RazorpayWebhookEvent, type WebhookDeps } from "../../lib/webhook-handler.js";
 
-// Vercel needs the raw body to verify the Stripe signature — disable the
+// Vercel needs the raw body to verify the Razorpay signature — disable the
 // default JSON body parser for this route.
 export const config = { api: { bodyParser: false } };
 
@@ -17,45 +17,42 @@ async function readRawBody(req: VercelRequest): Promise<Buffer> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!stripeSecretKey || !webhookSecret) {
-    res.status(500).json({ code: "not_configured", message: "Stripe is not configured." });
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    res.status(500).json({ code: "not_configured", message: "Razorpay webhook secret is not configured." });
     return;
   }
 
-  const stripe = new Stripe(stripeSecretKey);
   const rawBody = await readRawBody(req);
-  const signature = req.headers["stripe-signature"];
+  const signature = req.headers["x-razorpay-signature"];
   const priceMap = buildPriceMap(process.env);
 
   const deps: WebhookDeps = {
     verifyEvent(body, sig) {
-      return stripe.webhooks.constructEvent(body, sig, webhookSecret);
+      if (!Razorpay.validateWebhookSignature(body.toString(), sig, webhookSecret)) {
+        throw new Error("Invalid Razorpay webhook signature.");
+      }
+      return JSON.parse(body.toString()) as RazorpayWebhookEvent;
     },
-    async getCheckoutSessionPriceId(sessionId) {
-      const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 1 });
-      return lineItems.data[0]?.price?.id;
-    },
-    async upsertApiKeyForCheckout(record) {
+    async upsertApiKeyForSubscription(record) {
       const client = getSupabaseClient();
       await client.from("api_keys").insert({
         key: record.apiKey,
         org_id: record.orgId,
         plan: record.plan,
-        stripe_customer_id: record.stripeCustomerId,
+        razorpay_subscription_id: record.razorpaySubscriptionId,
         active: true,
         used_this_month: 0,
       });
       // The customer's actual key delivery (dashboard + email) is a
       // separate, non-webhook-blocking step — see docs/ARCHITECTURE.md.
     },
-    async setApiKeysActiveByCustomer(customerId, active) {
+    async setApiKeysActiveBySubscription(subscriptionId, active) {
       const client = getSupabaseClient();
-      await client.from("api_keys").update({ active }).eq("stripe_customer_id", customerId);
+      await client.from("api_keys").update({ active }).eq("razorpay_subscription_id", subscriptionId);
     },
   };
 
-  const result = await handleStripeWebhookRequest(rawBody, signature as string | undefined, priceMap, deps);
+  const result = await handleRazorpayWebhookRequest(rawBody, signature as string | undefined, priceMap, deps);
   res.status(result.status).json(result.body);
 }

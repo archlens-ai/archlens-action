@@ -87,34 +87,45 @@ model's output as untrusted input, not as this app's own template:
 
 GitHub Marketplace's native metered/subscription billing is wired up for
 **GitHub Apps**, not for a plain Action. ArchLens is listed on Marketplace
-for discovery only. Actual billing is Stripe Checkout
+for discovery only. Actual billing is a Razorpay Subscription
 (`api/checkout.ts`) issuing an `alk_live_...` API key on
-`checkout.session.completed` (`api/webhook/stripe.ts`), which the customer
+`subscription.activated` (`api/webhook/razorpay.ts`), which the customer
 pastes into their workflow as the `archlens-api-key` input (a repo/org
-secret). Quota enforcement (`backend/lib/quota.ts`) and content-hash caching
-(`backend/lib/cache.ts`) both run against Supabase, gating every request the
-Action makes to `/v1/generate`.
+secret). Billing runs through **Kith's existing Razorpay account** (freshly
+activated for international card payments — see `CLAUDE.md` item 36), not a
+separate ArchLens merchant account. Quota enforcement (`backend/lib/
+quota.ts`) and content-hash caching (`backend/lib/cache.ts`) both run
+against Supabase, gating every request the Action makes to `/v1/generate`.
 
 Both routes are thin Vercel wrappers over pure, dependency-injected handlers
 — `backend/lib/checkout-handler.ts` and `backend/lib/webhook-handler.ts` —
 following the same pattern as `generate-handler.ts`. This isn't just a style
-preference: it's what makes the webhook's Stripe-signature verification and
-provisioning logic unit-testable at all without a live Stripe account,
-using `stripe.webhooks.generateTestHeaderString` to construct genuinely
-validly-signed test payloads (pure local HMAC, no network call, no account
-needed) — see `backend/tests/webhook-handler.test.ts`.
+preference: it's what makes the webhook's signature verification and
+provisioning logic unit-testable at all without a live Razorpay account.
+Razorpay webhook signatures are a plain HMAC-SHA256 hex digest of the raw
+body (verified via the `razorpay` package's own `validateWebhookSignature`),
+so tests sign genuinely valid test payloads with plain `node:crypto`
+(no network call, no account needed) and verify them with that same real
+verification function — see `backend/tests/webhook-handler.test.ts`.
 
-**Payment-failure handling deliberately reacts to `customer.subscription.
-updated`, not raw `invoice.payment_failed`.** `invoice.payment_failed`
-fires on *every* retry attempt during Stripe's dunning/Smart Retries flow,
-not just the final one — gating API access on the first occurrence would
-cut off a paying customer's whole team over one transient card decline,
-before Stripe's own retry schedule even gets a chance to succeed. Instead,
-access is only revoked once the subscription itself transitions to
-`unpaid`/`canceled` (which Stripe does automatically after retries are
-exhausted), and is restored if it recovers back to `active`. A `past_due`
-subscription is left alone — a deliberate grace period, not an oversight.
-`customer.subscription.deleted` remains a hard, immediate cutoff.
+One genuine simplification versus the original Stripe design: Stripe's
+`checkout.session.completed` event doesn't include the Price ID directly,
+so provisioning needed a second API call (`checkout.sessions.listLineItems`)
+to find out which plan was purchased. Razorpay's `subscription.activated`
+payload includes `plan_id` directly on the subscription entity — no second
+round-trip needed.
+
+**Payment-failure handling deliberately reacts to `subscription.halted`,
+not the first failed charge attempt.** Razorpay retries a failed recurring
+charge several times (`subscription.pending` fires on each attempt) before
+giving up and moving the subscription to `halted` — gating API access on
+the first `pending` event would cut off a paying customer's whole team over
+one transient card decline, before Razorpay's own retry schedule even gets
+a chance to succeed. Instead, access is only revoked once the subscription
+actually reaches `halted` (retries exhausted) or is explicitly `cancelled`/
+`paused`, and is restored on `subscription.charged` (a successful recurring
+charge) or `subscription.resumed`. A `pending` subscription is left alone —
+a deliberate grace period, not an oversight.
 
 ## Visual design
 
@@ -190,7 +201,7 @@ for a look Mermaid's theming already gets most of the way to.
 
 ## Deployment topology (recommended, not required to run tests)
 
-- **`api/generate.ts`, `api/checkout.ts`, `api/webhook/stripe.ts`**: Vercel
+- **`api/generate.ts`, `api/checkout.ts`, `api/webhook/razorpay.ts`**: Vercel
   serverless functions — lightweight, no Chromium dependency.
 - **Render step**: Puppeteer/Chromium is a poor fit for Vercel's ephemeral
   serverless functions (cold starts, the ~50MB compressed function size
