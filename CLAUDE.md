@@ -2702,3 +2702,61 @@ env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`,
 .env.example`. Also not done: no GitHub org, no Vercel project, no live
 Razorpay Plans, no Marketplace listing — these need Anurag directly (see
 the checklist handed back alongside this item).
+
+## 38. Release execution, in progress (2026-09-16) — GitHub org/repo live, Razorpay USD plans blocked on Kith's international-cards review
+
+Working through the 6-step release checklist per item 36/37, driving
+steps 1, 2, 5, 6 directly (Anurag is handling steps 3/4 — Vercel project
+and applying `db/schema.sql` to Supabase — himself, logging in in his own
+browser).
+
+**Step 1 (merge feature branch into master): done.** Fast-forwarded
+`master` from `cc5329b` to `5caf480` (`feature/dark-theme-visual-redesign`,
+50 commits of real work) via `git merge --ff-only`, verified clean via
+`git merge-base` first. No conflicts, no merge commit.
+
+**Step 2 (GitHub org + repo): done.** Created the `archlens-ai` GitHub org
+(Free plan, under Anurag's personal `KITHMEDAI` account, contact email
+`canurag399@gmail.com`) and the repo `archlens-ai/archlens-action`
+(Public — required for the free/open-source tier and eventual Marketplace
+listing — empty, no README/gitignore/license, matching this repo's local
+history so the push is clean). **Not yet pushed**: this sandbox has no
+GitHub credentials (`gh` not installed, no git credential helper), so
+Anurag was asked to generate a short-lived fine-grained PAT (scoped to
+just this one repo, Contents: Read and write) and paste it here — waiting
+on that before `git remote add origin` + `git push -u origin master`.
+
+**Step 5 (Razorpay Plans + webhook): blocked, not a code/config
+problem.** Attempted to create the `ArchLens Solo (Monthly)` plan
+($12.00/mo USD) in Kith's Razorpay dashboard — Razorpay's plan-creation
+form offers USD as a currency option, but submitting it returned
+**"Currency provided is not supported."** Checked Account & Settings →
+International Payments directly: interntional card payments were not yet
+activated — the exact "Supporting Details" step (Import/Export Code +
+T&Cs + Submit & Verify) flagged back in the original Kith-payments thread
+as left incomplete really had never been finished. Completed it now:
+Business Details and Purpose Code (P0802) were already filled in from
+that earlier session, "Currently Accept International Transactions" left
+as "No" (accurate — Kith is pre-revenue internationally), IE Code left
+blank (optional), T&Cs checkbox checked, Submit & Verify clicked.
+Razorpay's own response: **"Your request to activate international card
+payments is under review. We'll verify your details in a few days and
+share an update by Sep 18, 2026."**
+
+This means USD-priced Solo/Team Plans (and therefore the whole
+Razorpay-based billing path) cannot be created until Razorpay approves
+that review — likely within ~2 days of this entry, not something
+controllable from here. **Nothing else about step 5 is blocked** — the
+plan-creation flow, the webhook registration flow, and the env vars
+(`RAZORPAY_PLAN_SOLO`/`RAZORPAY_PLAN_TEAM`) are all ready to fill in the
+moment Razorpay clears the review; this just needs a revisit after
+2026-09-18 (or sooner if Anurag gets a notification it cleared early).
+
+**Step 6 (Marketplace listing): not started yet** — sequenced after the
+repo is pushed and public, per the checklist's own ordering (a
+Marketplace listing needs a real public repo URL to point at).
+
+**Status honestly, for whoever picks this up next**: the release is
+real infrastructure work in progress, not blocked on a decision — two
+concrete external waits (Anurag's PAT for the push; Razorpay's ~2-day
+review for USD billing), everything else keeps moving in parallel.
