@@ -20,10 +20,21 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: archlens-ai/archlens-action@v1
+      - uses: archlens-ai/archlens-action/action@v1
         with:
           archlens-api-key: ${{ secrets.ARCHLENS_API_KEY }} # not required on public repos
 ```
+
+`action.yml` lives at `action/action.yml`, not the repo root (this is a
+monorepo — `action/` sits alongside `backend/`, `db/`, `docs/`), so the
+`uses:` reference needs the `/action` path segment. Omitting it is a
+launch-blocking bug: GitHub resolves a bare `owner/repo@ref` reference
+against `action.yml` at the exact repository root and errors immediately
+if it's missing. It also means this repo can never appear in GitHub
+Marketplace as-is — Marketplace publishing requires `action.yml` at the
+root with no subpath support. Restructuring so the Action ships from its
+own root-level repo (splitting `backend/`/`db/`/`docs/`/`marketing/` out)
+would fix both; not done here — see `marketing/marketplace-listing.md`.
 
 Get a key at `https://archlens.dev/dashboard` (private repos / orgs) or omit
 it entirely on a public repo to use the shared, rate-limited free-tier key.

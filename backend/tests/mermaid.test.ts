@@ -880,7 +880,17 @@ describe("renderMermaidToSvg (integration)", () => {
     const puppeteer = (await import("puppeteer-core")).default;
     const browser = await puppeteer.launch({
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: process.env.ARCHLENS_TEST_CHROMIUM_PATH,
+      // Unlike every other launch in this file, this one doesn't go through
+      // renderMermaidToSvg() (it launches its own browser to test <img>
+      // decoding directly), so it has to replicate that function's own
+      // executablePath ?? PUPPETEER_EXECUTABLE_PATH fallback itself rather
+      // than inheriting it — missing this is exactly why this one test, and
+      // only this one, failed in CI (no ARCHLENS_TEST_CHROMIUM_PATH there,
+      // and this line had no fallback to the PUPPETEER_EXECUTABLE_PATH the
+      // workflow does set).
+      executablePath:
+        process.env.ARCHLENS_TEST_CHROMIUM_PATH ??
+        process.env.PUPPETEER_EXECUTABLE_PATH,
     });
     try {
       const page = await browser.newPage();

@@ -18,13 +18,24 @@ jobs:
 
       - run: npm ci
 
-      # mmdc (mermaid-cli) needs its own headless Chromium before any test
-      # or script that renders a diagram runs — installed into puppeteer's
-      # default cache path so no ARCHLENS_TEST_CHROMIUM_PATH override is
-      # needed here (that env var exists only for sandboxes with a
-      # non-standard Chromium location, e.g. a Playwright-only install).
+      # renderMermaidToSvg() launches puppeteer-core directly (backend/lib/
+      # mermaid.ts), and puppeteer-core — unlike full puppeteer — never
+      # auto-detects a browser: it throws "An `executablePath` or `channel`
+      # must be specified" unless PUPPETEER_EXECUTABLE_PATH is set. `npx
+      # puppeteer browsers install chrome` only downloads the binary; it
+      # does not export its install path anywhere, so that env var has to
+      # be captured from this step's own output and written to $GITHUB_ENV
+      # for every later step in this job to inherit.
       - name: Install headless Chromium for mmdc
-        run: npx --yes puppeteer browsers install chrome
+        run: |
+          INSTALL_OUTPUT=$(npx --yes puppeteer browsers install chrome)
+          echo "$INSTALL_OUTPUT"
+          CHROME_PATH=$(echo "$INSTALL_OUTPUT" | tail -n1 | awk '{print $NF}')
+          if [ ! -x "$CHROME_PATH" ]; then
+            echo "::error::Could not determine the installed Chrome executable path from: $INSTALL_OUTPUT"
+            exit 1
+          fi
+          echo "PUPPETEER_EXECUTABLE_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
 
       - name: Type-check
         run: npm run lint
