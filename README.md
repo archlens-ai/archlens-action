@@ -1,9 +1,10 @@
 # ArchLens AI
 
 Turns a pull request's structural diff into an AI-generated architecture
-diagram, posted as a PR comment. Free for public repos; paid for private
-repos and orgs. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how
-it's built and why.
+diagram, posted as a PR comment. Free for public repos (live today); a
+paid tier is planned for private repos and orgs but **billing isn't live
+yet** — see Status below. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for how it's built and why.
 
 ## Quick start
 
@@ -86,16 +87,36 @@ no override is needed there.
 | `ARCHLENS_LLM_PROVIDER` | no | `anthropic` (default), or `openai`/`deepseek` opt-in |
 | `OPENAI_API_KEY` | only if provider=openai | Diagram generation |
 | `DEEPSEEK_API_KEY` | only if provider=deepseek | Diagram generation |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | yes | Billing — runs through Kith's existing, internationally-activated Razorpay account, not a separate ArchLens merchant account |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | yes (once billing is live) | Billing — intended to run through Kith's existing Razorpay account, not a separate ArchLens merchant account. **Not live yet**: Kith's international-card-payments activation was rejected 2026-09-20 (re-submission not allowed until Dec 16, 2026), so no USD Plan can be created through this account today. See CLAUDE.md item 39. |
 | `RAZORPAY_PLAN_SOLO`, `RAZORPAY_PLAN_TEAM` | yes | Maps Razorpay Plan IDs to internal plans |
 | `PUPPETEER_EXECUTABLE_PATH` | recommended | Points the render step at its Chromium binary |
 
 ## Status
 
+**Live now (2026-09-20): the free tier, for public repos.** The GitHub org
+and this repo are public, the Action builds and its CI is green. Point a
+public repo's workflow at `archlens-ai/archlens-action/action@v1` (see
+Quick start above) and omit `archlens-api-key` to use the shared,
+rate-limited free-tier key — no payment involved. This requires the
+backend to actually be deployed and connected to a live Supabase project
+(the pieces below); check with the maintainer if a public-repo PR isn't
+getting a comment.
+
+**Not live yet: paid private-repo/org billing.** The billing code
+(`backend/lib/billing.ts` + Razorpay Subscriptions integration) is written
+and tested, but there are no live Razorpay Plans to subscribe to —
+international card payments on the account this was meant to bill through
+were rejected by Razorpay's own review on 2026-09-20, and can't be
+resubmitted until December 16, 2026. See `CLAUDE.md` item 39 for the full
+story and the options being weighed (PayPal, a separate Stripe account, or
+waiting out the Razorpay retry window). Nobody can pay for a private-repo
+key yet; don't imply otherwise in any marketing copy pointed at real users
+before this is resolved.
+
 Core product logic (diff compression, generation pipeline, quota/caching,
 billing provisioning, PR commenting) is built and tested — 264 passing
 tests plus a real end-to-end dry run. A live Supabase project and Anthropic
-API key are already provisioned. **Not yet done:** the public GitHub org
-this repo will live in, a deployed Vercel project, live Razorpay Plans, and
-a GitHub Marketplace listing — see `docs/ARCHITECTURE.md`, `CLAUDE.md`
-(item 36), and `marketing/` for what's scoped versus what's live.
+API key are already provisioned. A GitHub Marketplace listing is also not
+live yet — blocked by a structural issue, see the Quick start note above
+and `marketing/marketplace-listing.md`. See `docs/ARCHITECTURE.md`,
+`CLAUDE.md` (items 36-39), and `marketing/` for the full status.

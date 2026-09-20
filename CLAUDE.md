@@ -2760,3 +2760,69 @@ Marketplace listing needs a real public repo URL to point at).
 real infrastructure work in progress, not blocked on a decision — two
 concrete external waits (Anurag's PAT for the push; Razorpay's ~2-day
 review for USD billing), everything else keeps moving in parallel.
+
+## 39. Razorpay international-cards activation REJECTED (not pending); decision made to launch the free public tier now, hold paid billing (2026-09-20)
+
+Following up on item 38's "revisit after 2026-09-18" note (today is
+2026-09-20, past that estimate): checked Account & Settings →
+International Payments in Kith's Razorpay dashboard directly. The actual
+status is worse than "still under review" — **it was rejected**:
+
+> "Your request to activate international card payments is rejected. Your
+> given details couldn't be verified by our banking partners. Please
+> submit a new request after December 16, 2026 and try again."
+
+This is a hard block on the whole Razorpay-USD-billing path from item
+36/37/38, not a short delay: no non-Indian-issued card can be charged
+through this account until at least mid-December, regardless of what
+currency the Plans are priced in. Razorpay's own page offers one built-in
+workaround (linking a PayPal account to collect international payments
+meanwhile) — noted but not acted on; linking a new payment account is
+Anurag's call, not something to do unasked.
+
+**Anurag's decision on being told this: "launch the free public version
+now"** — ship the free/public-repo tier today, hold all paid-tier work
+(Razorpay retry after Dec 16, PayPal linking, or standing up a fresh
+Stripe account) for later. This is a scoped narrowing of item 36's "full
+release" definition, not a reversal of it: item 36 said "full release"
+meant both public discoverability AND real billing; this makes billing an
+explicit follow-up rather than a launch blocker, since it doesn't block
+the free tier at all (no payment is involved in that path).
+
+**What this changes right now, done in this item:**
+- `README.md`: added an explicit "Status" split — free public-repo tier
+  is live today; paid private-repo/org billing is NOT live, with the
+  Razorpay rejection and retry date stated plainly so nobody (Anurag,
+  a contributor, a user reading the repo) mistakes the written pricing
+  promise for something currently payable. Also corrected the
+  `RAZORPAY_KEY_ID` etc. env var table row, which previously called
+  Kith's account "internationally-activated" — no longer true.
+- `backend/.env.example`: corrected the Razorpay comment block from
+  "pending review" to the actual rejected/Dec-16 status.
+
+**What this does NOT change**: nothing about the product code, the
+billing implementation (`billing.ts`/Razorpay Subscriptions integration
+from item 37), or the >= 9 score-gate retirement from item 36 — that
+retirement was about quality/adversarial-review score, a separate axis
+from whether billing can technically process a payment today. Both
+gates (score, billing) are now off the critical path for today's launch;
+billing specifically waits on one of the three options above, Anurag's
+call on which and when.
+
+**Still outstanding for the free tier to actually work end-to-end for a
+real external user** (not done in this item, not mine to drive per the
+release checklist): a deployed Vercel project for `backend/`, and
+`db/schema.sql` applied to the live Supabase project — both explicitly
+Anurag's own tasks (checklist steps 3/4). The Action and GitHub org/repo
+being public is necessary but not sufficient; until the backend is
+reachable, a public-repo PR calling `archlens-ai/archlens-action/action@v1`
+will not get a diagram comment. Worth Anurag confirming these are done
+(or finishing them) before telling anyone this is live.
+
+**Not touched this item, deliberately**: GitHub Marketplace listing
+(still blocked by the `action.yml`-not-at-root structural issue from
+item 38, and not required for the free tier to work via a direct
+`uses:` reference) and repo discoverability polish (About/topics) — the
+latter is public-content editing on the actual repo settings, left for
+Anurag or a follow-up with explicit sign-off rather than done
+unilaterally.
