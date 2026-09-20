@@ -2826,3 +2826,59 @@ item 38, and not required for the free tier to work via a direct
 latter is public-content editing on the actual repo settings, left for
 Anurag or a follow-up with explicit sign-off rather than done
 unilaterally.
+
+## 40. Vercel deployment wired up (Git connect + Root Directory); real secrets still needed — Anurag's own step (2026-09-20)
+
+Continuing "check whatever is left and help me do that" after item 39's
+free-tier-only decision. Two real blockers stood between the public repo
+existing and the free tier actually working end to end (per item 39's own
+"still outstanding" list): the Vercel project had zero deployments and no
+Git connection, and the org-level Vercel GitHub App wasn't installed on
+`archlens-ai` at all (confirmed via GitHub's own Installed GitHub Apps page
+for that org — none). Anurag approved ("go ahead") granting the Vercel
+GitHub App scoped ("Only select repositories") access to `archlens-ai`;
+installation confirmed via Vercel's own "Installation Approved" page.
+
+**Done this item, via direct browser automation once the App was
+installed:**
+- Connected the `kithmedaienterprise/archlens-action` Vercel project's Git
+  integration to `archlens-ai/archlens-action` (Project Settings > Git).
+- Set Root Directory to `backend` (Project Settings > Build and Deployment)
+  — required per item 37/README, since the monorepo's backend code lives
+  at `backend/`, not the repo root. Confirmed saved ("Root directory
+  updated").
+- Added one environment variable, `SUPABASE_URL` (Config type, not
+  Secret) — this is a non-sensitive public project URL, already visible
+  in the committed `backend/.env.example`, not a credential.
+
+**Deliberately NOT done, and NOT mine to do:** every other required env
+var (`SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`,
+`RAZORPAY_*` placeholders, `PUPPETEER_EXECUTABLE_PATH`) is a real secret,
+API key, or token — entering those into any field is a standing hard rule
+for this agent regardless of who provides the value or asks for it. Anurag
+needs to add these himself in Vercel's dashboard
+(Project Settings > Environment Variables > Add Environment Variable,
+Type: Secret) using the real values already sitting in his own local
+`backend/.env` (gitignored, per item 2/3's provisioning) — not re-derive
+or re-request them through this agent. Once added, Vercel needs a redeploy
+(the UI offers this automatically after a var is saved) to pick them up.
+
+**Also still blocking, not resolvable from this sandbox or the device
+bridge's shell:** the local commit `b08822d` (item 39's doc fixes) is
+still unpushed — confirmed via `git fetch` + `git log origin/main..HEAD`:
+exactly 1 commit ahead, no conflicts, clean fast-forward. Pushing needs
+real GitHub write-auth, which the device-bridge shell doesn't have (no
+Windows Credential Manager access, confirmed by a prior failed push
+attempt) and which this agent should not obtain by handling a PAT/token
+directly per the same credential rule above. Anurag needs to run
+`git push origin main` himself from his own terminal (already has valid
+credentials there — this is a plain fast-forward, no force needed, no new
+PAT required).
+
+**Net status after this item**: Git connected + Root Directory set on
+Vercel is genuinely new progress toward the free tier actually working,
+but it will not produce a working deployment until Anurag does the two
+things above himself (push the pending commit, add the four-ish real
+secret env vars). Nothing else is blocking a first deployment once those
+land — worth Anurag triggering/checking the first build once the vars are
+in, since this agent hasn't seen a successful production deployment yet.
