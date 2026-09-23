@@ -2882,3 +2882,51 @@ things above himself (push the pending commit, add the four-ish real
 secret env vars). Nothing else is blocking a first deployment once those
 land — worth Anurag triggering/checking the first build once the vars are
 in, since this agent hasn't seen a successful production deployment yet.
+
+## 41. Corrected a wrong claim: the "live-verified" Supabase project ref no longer exists; the real one has likely never had schema applied (2026-09-23)
+
+While walking Anurag through adding real secrets to Vercel, asked him to
+confirm the Supabase project ref this file has cited since item 2
+(`litwegklwcfbwjnemaaq`, claimed "live, verified" 2026-08-30) still loads.
+**It doesn't.** Separately, a screenshot Anurag shared of the actual
+Supabase org (`archlens-ai`, the correct org — confirmed it has exactly one
+project) shows that project is named "kithmedai@gmail.com's Project", ref
+**`rckavxyujtbmoanaxvff`** (`https://rckavxyujtbmoanaxvff.supabase.co`) —
+a completely different ref from the one this file has been citing for
+three weeks — and its dashboard showed "No repository connected" / "No
+migrations."
+
+**This means item 2's "live, verified" claim was tracking a project that
+either no longer exists or was never the real one** — every session since
+has been citing a dead ref without anyone re-checking it end to end (a
+`fetch()`-based check confirmed a *response* from something at the time,
+per item 2's own text, but that was 2026-08-30; nobody re-verified it
+since, including this agent across items 39/40). Corrected `SUPABASE_URL`
+in Vercel's environment variables to the real ref
+(`rckavxyujtbmoanaxvff`) — that part's fixed and confirmed saved.
+
+**Not yet confirmed, and this is the important part: whether `db/schema.sql`
+has actually been run against `rckavxyujtbmoanaxvff`.** "No migrations"
+in Supabase's UI isn't fully conclusive on its own (item 2's original
+schema apply was raw SQL Editor DDL, which Supabase's migration-tracking
+UI doesn't see either) — but combined with this being a different project
+than the one item 2 verified, the honest default assumption is that this
+project's four tables (`orgs`, `api_keys`, `usage_logs`, `diagram_cache`),
+the `diagrams` storage bucket, and the `GRANT`/`ALTER DEFAULT PRIVILEGES`
+fix from item 2 do NOT exist here and need to be (re)applied from
+scratch. This agent was blocked from checking the Table Editor directly
+(Chrome's own auto-mode classifier flagged navigating into the project as
+"Credential Exploration" and refused it — correctly cautious, not a bug)
+so this is unconfirmed, not verified-false. **Anurag needs to open the
+Table Editor for `rckavxyujtbmoanaxvff` himself and check** whether those
+four tables exist before assuming the backend will work once secrets are
+added — if they don't, `db/schema.sql` needs to be run there (SQL Editor
+> paste the file > run), same process as item 2 originally described.
+
+**Standing lesson, same shape as item 15's stale-screenshot correction:**
+a fact verified once, weeks ago, in a doc that keeps getting cited by
+new sessions without anyone re-checking it against current reality, is
+not a fact — it's an assumption wearing a "verified" label. Whoever next
+touches Supabase config on this project: confirm the ref against what's
+actually loading in the browser before trusting anything CLAUDE.md says
+about it, this item included once enough time has passed.
