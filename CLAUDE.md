@@ -2930,3 +2930,36 @@ not a fact — it's an assumption wearing a "verified" label. Whoever next
 touches Supabase config on this project: confirm the ref against what's
 actually loading in the browser before trusting anything CLAUDE.md says
 about it, this item included once enough time has passed.
+
+## 42. Schema applied to the real project, re-verified in the Table Editor (2026-09-25)
+
+Closes the open question from item 41. Anurag ran `db/schema.sql` against
+`rckavxyujtbmoanaxvff` (SQL Editor) after this agent was blocked from
+running it directly (Chrome's auto-mode classifier flagged pasting/running
+schema-creating SQL against a live database as "Modify Shared Resources"
+— correctly cautious, a production DDL change is exactly the kind of
+action that should need a human's own hand on it, not automated). Re-
+checked the Table Editor directly afterward rather than trusting the "it
+ran without error" report alone: all four tables now exist — `orgs`,
+`api_keys`, `diagram_cache`, `usage_logs` — where item 41 confirmed zero.
+
+**Still not independently re-verified**: the actual `GRANT`/`ALTER DEFAULT
+PRIVILEGES` lines near the bottom of `schema.sql` did what item 2 says
+they need to (a real REST call with the service_role key succeeding
+against these tables) — this check only confirmed the tables exist in the
+Table Editor, which uses the dashboard's own elevated access, not the
+service_role-over-REST path the actual backend uses. Given item 2's own
+documented history of exactly this kind of grant silently failing to
+propagate on a freshly-created project, don't assume it's fine just
+because the tables are visible here — the real test is once
+`SUPABASE_SERVICE_ROLE_KEY` is in Vercel and the backend makes its first
+real request.
+
+**Net effect**: the schema gap flagged in item 41 is closed. Combined with
+item 40's Git connection, this item's schema, and item 41's corrected
+`SUPABASE_URL`, the only things left before the free tier can actually
+work end to end are the two Anurag-only steps already tracked in item 40:
+push the pending local commits, and add the real
+`SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`/`ANTHROPIC_API_KEY` to
+Vercel (this project's own keys — `archlens-ai`'s, not Kith's, per the
+distinction already flagged when Anurag asked to reuse Kith's).
