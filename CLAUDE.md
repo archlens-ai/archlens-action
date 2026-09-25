@@ -3012,3 +3012,65 @@ of bug until the first real non-dev deploy.
 Not yet done: confirming the NEXT deployment (triggered by this commit,
 once pushed) actually succeeds and the backend responds to a real request
 — this only fixes the build, hasn't yet seen a green deployment.
+
+## 44. Item 43's fix didn't actually work on Vercel — root-caused and fixed for real this time (2026-09-25)
+
+After Anurag pushed item 43's commit (`20e1dd5`), checked the resulting
+Vercel deployment rather than assuming a local fix meant a green build.
+It didn't — same failure, verbatim:
+
+```
+> archlens@0.1.0 postinstall
+> patch-package
+sh: line 1: patch-package: command not found
+Error: Command "npm install" exited with 127
+```
+
+This means item 43's diagnosis was incomplete. `patch-package` **was**
+correctly in `dependencies` (confirmed by reading the raw committed
+`package.json` and `package-lock.json` on GitHub at `20e1dd5` directly,
+not trusting local state) — the devDependencies theory does not explain
+this failure. Re-tested the devDependencies theory directly: cloned
+`20e1dd5` fresh into an isolated sandbox and ran plain `npm install`
+(no flags) — it succeeded, `patch-package` ran fine. So the bug is not
+reproducible with a generic npm install; it is specific to something
+about Vercel's actual build container (most likely an npm/Node version
+difference in how npm links root-level bins in an npm-workspaces
+monorepo — not confirmed further, see below on why).
+
+Rather than chase the exact Vercel-environment root cause further (would
+require matching Vercel's exact Node/npm version locally, which isn't
+verifiable from here), applied the structurally safer fix: stopped
+depending on `patch-package` being resolvable via `$PATH` at all.
+Changed the `postinstall` script from `"patch-package"` to
+`"node ./node_modules/patch-package/index.js"` — invoking the package's
+actual entry script directly via a relative path (confirmed via its own
+`package.json`: `"bin": "./index.js"`, a real file with a `#!/usr/bin/env
+node` shebang). This works regardless of whether npm populated
+`node_modules/.bin` or `$PATH` correctly, as long as `node_modules/patch-
+package` itself was installed — which every install mode (`npm install`,
+`npm install --omit=dev`) already confirms it is.
+
+**Verified, not assumed**: fresh clone of `20e1dd5`, `node_modules`
+removed, ran `npm install` clean — postinstall fires
+`node ./node_modules/patch-package/index.js`, both patches apply
+(`@mermaid-js/layout-elk`, `mermaid`). Repeated with `npm install
+--omit=dev` — same result. Then `npm run lint` (both workspaces,
+`tsc --noEmit` clean) and the full suite: 264/264 passing (246 backend
+including the 12 real-Chromium mermaid render integration tests, + 18
+action).
+
+**Standing lesson, sharper than item 43's**: a local reproduction that
+matches the *stated* failure mode (`npm install --omit=dev` failing the
+same way) is not proof of the actual cause if you haven't confirmed the
+real environment shares the property you're blaming — Vercel's build
+container's exact npm/Node behavior was never actually verified, only
+assumed. The fix this time doesn't depend on getting that diagnosis
+right: it removes the PATH dependency entirely instead of trying to make
+the PATH populate correctly.
+
+Not yet done: confirming this actually goes green on Vercel — this is
+the second consecutive round of "looked like a build fix" and the first
+one didn't hold, so the standing rule now is nothing is reported as
+fixed until the deployment itself has been checked, not just the local
+repro.
