@@ -14,8 +14,10 @@
     "dry-run": "tsx scripts/dry-run.ts",
     "postinstall": "patch-package"
   },
+  "dependencies": {
+    "patch-package": "^8.0.1"
+  },
   "devDependencies": {
-    "patch-package": "^8.0.1",
     "tsx": "^4.23.12",
     "typescript": "^5.5.4"
   },

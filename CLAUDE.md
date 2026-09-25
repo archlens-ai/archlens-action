@@ -2963,3 +2963,52 @@ push the pending local commits, and add the real
 `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`/`ANTHROPIC_API_KEY` to
 Vercel (this project's own keys — `archlens-ai`'s, not Kith's, per the
 distinction already flagged when Anurag asked to reuse Kith's).
+
+## 43. First real Vercel build attempt failed on a genuine code bug, not config — fixed and verified (2026-09-25)
+
+After the real secrets landed in Vercel (item 42's follow-up), checked the
+project's Deployments tab rather than assuming the earlier auto-triggered
+deploys had worked. They hadn't — every deployment since the Git
+connection (item 40) was `Error`, all failing identically:
+
+```
+> archlens@0.1.0 postinstall
+> patch-package
+sh: line 1: patch-package: command not found
+npm error code 127
+Error: Command "npm install" exited with 127
+```
+
+Root cause, confirmed by reading the actual build log rather than
+guessing from the summary line: root `package.json`'s `postinstall` script
+runs `patch-package` (needed for the two real patches this project ships —
+`@mermaid-js/layout-elk` and `mermaid` itself, see `patches/`) — but
+`patch-package` was listed only in `devDependencies`. Vercel's install step
+for this project does not install devDependencies, so the binary was
+never there when `postinstall` tried to run it. This had never surfaced
+before because nobody had gotten this far in the deploy pipeline until now
+— `npm test`/`npm install` locally always installs devDependencies by
+default, so this was invisible in every local run and every sandbox this
+project has ever been built in.
+
+**Fixed**: moved `patch-package` from `devDependencies` to `dependencies`
+in the root `package.json`, regenerated `package-lock.json` via a real
+`npm install`. Verified the actual failure mode, not just the fix:
+reproduced the exact error locally with `npm install --omit=dev` before
+the change (fails identically — `patch-package: command not found`), then
+confirmed it succeeds after (`patch-package 8.0.1 ... Applying
+patches...` both patches apply). Full suite still green after: 264/264
+(246 backend — including the 12 real-Chromium render integration tests,
+run against this sandbox's actual Playwright Chromium binary, not
+skipped — + 18 action), `tsc --noEmit` clean on both workspaces.
+
+**Standing lesson for whoever ships a postinstall/prepare script next**:
+never put a package a postinstall/prepare hook depends on in
+`devDependencies` — treat "does this run in a production-only install" as
+the actual test, not "does `npm install` work locally," since local
+installs default to including devDependencies and hide this exact class
+of bug until the first real non-dev deploy.
+
+Not yet done: confirming the NEXT deployment (triggered by this commit,
+once pushed) actually succeeds and the backend responds to a real request
+— this only fixes the build, hasn't yet seen a green deployment.
