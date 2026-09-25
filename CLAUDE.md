@@ -3074,3 +3074,87 @@ the second consecutive round of "looked like a build fix" and the first
 one didn't hold, so the standing rule now is nothing is reported as
 fixed until the deployment itself has been checked, not just the local
 repro.
+
+## 45. Item 44 also didn't hold — found the actual root cause this time, from the real error text (2026-09-25)
+
+Checked the deployment triggered by item 44's commit (`a64dc68`) instead
+of assuming. Progress, but not success: the error changed shape —
+`npm install` now exits `1` instead of `127`, and the real message,
+finally specific enough to root-cause instead of guess:
+
+```
+Error: Cannot find module '/vercel/path0/node_modules/patch-package/index.js'
+```
+
+That path is the tell. This project's Vercel "Root Directory" is set to
+`backend` (item 40), with "Include files outside the Root Directory"
+enabled so the true monorepo root (containing the root `package.json`,
+`action/`, `backend/`, and the hoisted root `node_modules`) is mounted
+one level above it. `/vercel/path0` **is** that Root Directory —
+`backend`, not the monorepo root. npm's install step correctly walks up
+and installs from the real root (confirmed again: the script banner
+still prints `archlens@0.1.0 postinstall`, the root package's name), but
+the **process cwd it actually executes lifecycle scripts in stays at
+`/vercel/path0`** — i.e. `backend/`, not the directory containing
+`package.json`. So `./node_modules/patch-package/index.js` (item 44's
+fix, a path relative to cwd) resolved against the wrong directory:
+`backend/node_modules/...`, which doesn't exist, since `patch-package`
+is a root-only dependency hoisted to the *root* `node_modules`, one
+level above where the script actually runs.
+
+This is the reason item 43's `devDependencies` theory and item 44's
+relative-path theory both looked plausible but weren't it: neither
+accounted for Vercel executing this specific project's lifecycle scripts
+from the configured Root Directory rather than from the directory that
+actually owns the script. A plain local `npm install` never surfaces
+this, because locally there's no Root Directory split — cwd and the
+package.json's directory are always the same place.
+
+**Verified the mechanism before fixing it**: reproduced the exact
+mismatch locally — ran `npm install --ignore-scripts` from the repo
+root, then, from inside `backend/`, ran item 44's exact postinstall
+command with `npm_package_json` manually set to the root `package.json`
+(matching what npm's own lifecycle env actually provides — confirmed via
+`npm run env | grep npm_package_json`, which reports the absolute path
+to the *root* `package.json` even when invoked from `backend/`). It
+failed exactly like Vercel: `Cannot find module
+'.../backend/node_modules/patch-package/index.js'`.
+
+**Fixed properly this time**: postinstall no longer assumes anything
+about which directory it's running in. It reads `npm_package_json` (an
+env var npm always sets to the absolute path of the package.json whose
+script is currently running — confirmed present and correct regardless
+of invocation cwd), `chdir`s to that directory, then requires
+`patch-package` by bare specifier so Node's own module resolution runs
+from the correct location:
+
+```json
+"postinstall": "node -e \"process.chdir(require('path').dirname(process.env.npm_package_json)); require('patch-package')\""
+```
+
+This also incidentally fixes a second latent bug in the same failure
+mode: `patch-package` itself resolves its `patches/` directory relative
+to *its own* cwd at runtime, so even a correctly-invoked `patch-package`
+running from `backend/` would have silently reported "No patch files
+found" instead of applying `patches/@mermaid-js+layout-elk+0.2.3.patch`
+and `patches/mermaid+11.14.0.patch` — a second, quieter way item 44
+could have "succeeded" (exit 0) while doing nothing. The `chdir` fixes
+both problems with one change, since it happens before `patch-package`
+ever looks for anything.
+
+**Verified, not assumed**: re-ran the exact simulated-mismatch
+scenario (cwd=`backend/`, `npm_package_json` pointing at root) with the
+new script — both patches now apply (`@mermaid-js/layout-elk@0.2.3 ✔`,
+`mermaid@11.14.0 ✔`), exit 0. Also re-verified the normal case (cwd =
+repo root, matching a plain local `npm install`) still works. Full
+suite: 264/264 (246 backend incl. the 12 real-Chromium render
+integration tests + 18 action), `tsc --noEmit` clean on both workspaces.
+
+**Standing lesson, for real this time**: items 43 and 44 were both
+plausible-sounding fixes built on inference from an 11-second build
+failure without ever reading a Vercel-specific detail (the literal
+`/vercel/path0/...` path) closely enough to notice it named the actual
+mechanism. The fix that finally held came from taking the exact error
+string at face value instead of pattern-matching it to a familiar
+category of npm bug. Still not marking this closed until the next
+deployment is actually checked green — that check is next.

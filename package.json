@@ -12,7 +12,7 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "dry-run": "tsx scripts/dry-run.ts",
-    "postinstall": "node ./node_modules/patch-package/index.js"
+    "postinstall": "node -e \"process.chdir(require('path').dirname(process.env.npm_package_json)); require('patch-package')\""
   },
   "dependencies": {
     "patch-package": "^8.0.1"
