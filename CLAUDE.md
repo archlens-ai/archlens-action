@@ -3158,3 +3158,65 @@ mechanism. The fix that finally held came from taking the exact error
 string at face value instead of pattern-matching it to a familiar
 category of npm bug. Still not marking this closed until the next
 deployment is actually checked green — that check is next.
+
+## 46. Item 45 still failed — `process.chdir()` inside `node -e` doesn't do what it looks like it does (2026-09-25)
+
+Checked the deployment for `5e9bdf4` (item 45) instead of assuming it
+held. It failed again — same `npm install` exit 1, but a new, more
+specific error:
+
+```
+Error: Cannot find module 'patch-package'
+Require stack:
+- /vercel/path0/[eval]
+```
+
+The require stack is the tell: it still says `/vercel/path0`, meaning
+the `process.chdir()` call in item 45's fix never actually changed where
+`require('patch-package')` looked. Root cause: for a `node -e "..."`
+script, Node builds the synthetic `[eval]` module's lookup path
+(`module.paths`) from `process.cwd()` **before** any of the eval'd code
+runs — calling `process.chdir()` partway through the same script changes
+the OS-level working directory but does not retroactively update that
+already-computed module-resolution path. So the `chdir()` had no effect
+on where `require()` looked; it was resolving purely against the
+original `/vercel/path0`, exactly like items 43/44 did, just one layer
+more disguised.
+
+**Verified this mechanism specifically** before trusting a fix again:
+reproduced the exact `Require stack: - /vercel/path0/[eval]` failure
+locally by running item 45's precise script from `backend/` with
+`npm_package_json` pointing at the root `package.json` — failed
+identically, confirming the diagnosis rather than assuming it.
+
+**Fixed by not fighting `require()`'s caching at all**: postinstall now
+spawns `patch-package/index.js` as a genuinely new child process via
+`child_process.execFileSync`, passing `cwd` as a spawn option rather
+than trying to `chdir()` inside a running process. A freshly spawned
+process computes its own module-resolution paths and its own
+`process.cwd()` from scratch at startup, so there's no stale state to
+fight — both the `require`/`bin` resolution problem (items 44/45) and
+patch-package's own `patches/`-directory-relative-to-cwd problem (noted
+in item 45) are fixed the same way, for the same reason:
+
+```json
+"postinstall": "node -e \"const cp=require('child_process');const path=require('path');const dir=path.dirname(process.env.npm_package_json);cp.execFileSync(process.execPath,[path.join(dir,'node_modules','patch-package','index.js')],{cwd:dir,stdio:'inherit'})\""
+```
+
+**Verified, not assumed**: re-ran the exact bug scenario (cwd=`backend/`,
+`npm_package_json` pointing at root) — both patches now apply
+(`@mermaid-js/layout-elk@0.2.3 ✔`, `mermaid@11.14.0 ✔`), exit 0. Also
+re-verified the normal case (cwd = repo root). Full suite: 264/264 (246
+backend incl. the 12 real-Chromium render integration tests + 18
+action), `tsc --noEmit` clean on both workspaces.
+
+**Standing lesson**: three fixes in a row (43, 44, 45) each looked
+verified locally and each broke on the next real deployment, because
+each verification reproduced the *symptom* (a failing command) without
+reproducing the *exact mechanism* Node/npm used to fail — a plain local
+`npm install` never hits any of these bugs, since cwd and the
+package.json's directory are always the same place locally. Starting
+with item 45's check, verification means literally reproducing Vercel's
+`Require stack:`/error text locally char-for-char before believing a fix
+addresses it, not just getting a green exit code. Not calling this done
+until the actual next deployment is checked — no exceptions this time.
