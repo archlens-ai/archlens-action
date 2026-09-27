@@ -12,7 +12,7 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "dry-run": "tsx scripts/dry-run.ts",
-    "postinstall": "node -e \"const cp=require('child_process');const path=require('path');const dir=path.dirname(process.env.npm_package_json);cp.execFileSync(process.execPath,[path.join(dir,'node_modules','patch-package','index.js')],{cwd:dir,stdio:'inherit'})\""
+    "postinstall": "node -e \"const p=require('path'),f=require('fs');function up(d){let c=p.resolve(d);for(;;){const t=p.join(c,'scripts','run-patch-package.cjs');if(f.existsSync(t))return t;const parent=p.dirname(c);if(parent===c)return null;c=parent;}}const anchors=[process.env.npm_package_json?p.dirname(process.env.npm_package_json):null,process.cwd(),__dirname].filter(Boolean);let s=null;for(const a of anchors){s=up(a);if(s)break;}if(!s){console.error('[postinstall-bootstrap] could not locate scripts/run-patch-package.cjs; anchors tried: '+JSON.stringify(anchors));process.exit(1);}require(s);\""
   },
   "dependencies": {
     "patch-package": "^8.0.1"

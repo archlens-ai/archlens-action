@@ -3220,3 +3220,100 @@ with item 45's check, verification means literally reproducing Vercel's
 `Require stack:`/error text locally char-for-char before believing a fix
 addresses it, not just getting a green exit code. Not calling this done
 until the actual next deployment is checked — no exceptions this time.
+
+## 47. Item 46 ALSO failed on Vercel — stopped guessing, built a self-diagnosing/self-locating runner instead (2026-09-27)
+
+Checked the `b361476` deployment instead of trusting the user's pasted
+`git push` output as proof it was green (a push landing and a build
+succeeding are two different things — verified both, separately, this
+time). It failed again:
+
+```
+Error: Cannot find module '/vercel/path0/node_modules/patch-package/index.js'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1564:15)
+    ...
+```
+
+This is the fourth distinct failure in this saga (43 → 44 → 45 → 46), each
+time from a fix that looked correct after local verification. Before
+writing fix #5, stopped and re-derived the actual facts instead of
+pattern-matching to the previous three theories:
+
+- Confirmed via Vercel's Project Settings → Build and Deployment that Root
+  Directory = `backend`, "Include files outside the Root Directory" =
+  Enabled.
+- The postinstall banner in every single failure (43-46) has read
+  `archlens@0.1.0 postinstall` — `archlens` is the ROOT package's name
+  (confirmed by reading `backend/package.json`, whose name is
+  `@archlens/backend`, not `archlens`). This proves npm is running the
+  ROOT's own postinstall lifecycle script, not backend's.
+- Confirmed `path.dirname(undefined)` throws immediately (`TypeError
+  [ERR_INVALID_ARG_TYPE]`) rather than silently producing a path — so item
+  46's error, `.../vercel/path0/node_modules/...`, is only possible if
+  `process.env.npm_package_json` was a real, valid string whose dirname
+  is exactly `/vercel/path0`.
+- Conclusion: `/vercel/path0` **is** the true monorepo root on Vercel's
+  build container (Root Directory only affects where the framework build
+  command later `cd`s, not where install/postinstall run) — the opposite
+  of what items 45/46 assumed. And yet, on Vercel specifically,
+  `node_modules/patch-package/index.js` does not exist there at
+  postinstall time, even though a byte-for-byte fresh clone of the same
+  commit (`git clone` + `npm ci`, done twice, plus `npm install
+  --omit=dev` as a third variant) installs it there just fine every time,
+  264/264 tests green, lint and build clean.
+
+That last point means the exact mechanism is still not reproducible
+locally — something specific to Vercel's container (npm/Node version,
+timing, or something else not yet identified) intermittently or
+consistently fails to fully materialize patch-package's files even though
+its transitive deps clearly get resolved (the `rimraf`/`npmlog`/`inflight`/
+`glob`/`gauge`/`are-we-there-yet`/`tar` deprecation warnings — patch-package
+v8's own dependency tree — appear in every failing log). Rather than
+inventing a fifth theory and hoping, the fix stops depending on knowing
+the exact path at all.
+
+**Fix**: `scripts/run-patch-package.cjs` — a real file, not a `node -e`
+one-liner — that searches upward from every plausible anchor
+(`npm_package_json`'s dirname, `process.cwd()`, `__dirname`) for
+`node_modules/patch-package/index.js`, logs every anchor it tried and
+what it found (so a fifth failure, if it ever happens, is diagnosable
+from the log alone instead of requiring another guess-and-redeploy
+cycle), and spawns patch-package with `cwd` set to wherever it was
+actually found (three directories up from `index.js`), so patch-package's
+own cwd-relative `patches/` lookup is always correct too.
+
+The `postinstall` script itself is now also an upward-searching bootstrap
+(anchored the same way) that locates `scripts/run-patch-package.cjs`
+before requiring it by absolute path — so even if npm's cwd contract for
+the root's own lifecycle script somehow doesn't hold on Vercel's
+container (unconfirmed, but everything in this saga has been "impossible"
+until it happened), the entry point itself is still found.
+
+**Verified against four scenarios, not one**, using the real `archlens-ai/
+archlens-action` repo at `b361476` (fresh `git clone` each time, real
+`npm ci`/`npm install --omit=dev`, not a hand-simulated repro):
+1. cwd=root, `npm_package_json`=root (the normal case) — pass.
+2. cwd=`backend/`, `npm_package_json`=root (the exact mismatch items
+   44-46 each assumed in turn) — pass.
+3. cwd=`backend/`, `npm_package_json` unset entirely — pass (this one
+   failed under the item-46-era bootstrap before the upward-search fix
+   was added to the bootstrap itself, not just to the patch-package
+   finder — caught by testing the worst case deliberately instead of
+   just the case believed to be real).
+4. cwd=root, `npm_package_json` unset — pass.
+
+Full suite: 264/264 (18 action + 246 backend, incl. the 12 real-Chromium
+render integration tests), `tsc --noEmit` clean on both workspaces, `ncc
+build` clean.
+
+**Standing lesson, sharpened further**: after three straight "verified
+locally, failed on the real deployment" cycles, the fix that finally
+should hold is not the one that nails down the *one true* mechanism (we
+still don't have 100% certainty why Vercel's install leaves
+patch-package's files incomplete) — it's the one that stops needing to
+know it, by searching for ground truth at runtime instead of assuming a
+fixed path. Verifying a single "expected" scenario is not enough when the
+whole problem is that the expected scenario keeps turning out to be
+wrong; verify the failure modes you're NOT sure about too. Not calling
+this done until the actual next deployment is checked — still no
+exceptions.
