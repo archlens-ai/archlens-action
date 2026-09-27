@@ -3409,3 +3409,91 @@ single, simple explanation instead of four separate ones.
 Not yet done: confirming this deployment finally goes green — the
 absolute rule holds one more time: not calling this closed until the
 actual next Vercel deployment is checked.
+
+## Item 49: `f31a716` fixed the postinstall saga for real — then hit a
+## brand-new, unrelated failure (missing "public" Output Directory) —
+## fixed and GENUINELY VERIFIED GREEN in production
+
+Checked the actual Vercel deployment for `f31a716` (item 48's fix), per
+the standing rule that a fix is never "done" until the real deployment
+is checked. Result: it failed too — but with a **completely different**
+error than every prior attempt, which is itself the confirmation that
+item 48's fix worked:
+
+```
+> archlens@0.1.0 postinstall
+[run-patch-package] npm_package_json     = /vercel/path0/package.json
+[run-patch-package] found patch-package at /vercel/path0/node_modules/patch-package/index.js (via anchor /vercel/path0)
+[run-patch-package] spawning patch-package with cwd=/vercel/path0
+patch-package 8.0.1
+Applying patches...
+@mermaid-js/layout-elk@0.2.3 ✔
+mermaid@11.14.0 ✔
+added 445 packages in 9s
+...
+Running "npm run build"
+> @archlens/backend@0.1.0 build
+> tsc --noEmit
+
+Error: No Output Directory named "public" found after the Build completed.
+Configure the Output Directory in your Project Settings. Alternatively,
+configure vercel.json#outputDirectory.
+```
+
+**The items 43-48 postinstall/patch-package saga is genuinely, fully
+over.** patch-package resolved, both patches applied, install succeeded
+end-to-end on the real Vercel container. This is a new, unrelated
+failure one step later in the pipeline.
+
+**Root cause of this new failure**: `backend/package.json` has a `build`
+script (`tsc --noEmit`) that exists purely for CI type-checking — it
+emits no files by design. Vercel's zero-config detection sees a `build`
+script, runs it as the Build Command, and then — because the Project's
+Framework Preset is "Other" with no Output Directory override — expects
+to find either a `public/` directory or fall back to the project root.
+That fallback didn't trigger, so the build was flagged as producing no
+usable output.
+
+**Fixed via Vercel Project Settings (not code)**: Settings → Build and
+Deployment → Framework Settings → Output Directory: toggled "Override"
+on and set it explicitly to `.` (the placeholder text itself says the
+default fallback is `'public' if it exists, or '.'` — so this just makes
+that fallback explicit instead of relying on detection). Saved
+successfully ("Build and development settings updated" confirmed).
+Redeployed the same `f31a716` source via the dashboard's Redeploy button
+(which explicitly uses "the latest Project Settings", confirmed in the
+redeploy dialog) rather than pushing a new no-op commit.
+
+**Verified — genuinely, this time, past both the Vercel status AND a
+live production request**:
+1. New deployment (`2z2muKPB4`) reached Status: Ready, Duration 35s —
+   first genuinely green production deployment in this entire saga.
+2. Not trusting "Ready" alone (per the standing lesson that a status
+   badge is not proof): sent a live GET request to
+   `https://archlens-action.vercel.app/api/generate` (the real
+   production domain, not a preview URL). Response:
+   `{"code":"method_not_allowed","message":"Use POST."}` — the *exact*
+   JSON `backend/api/generate.ts`'s handler returns for a non-POST
+   request. This is only possible if the actual compiled serverless
+   function is deployed and executing live, not a Vercel routing 404 or
+   a cached/stale response.
+
+**This closes the entire items 43-49 Vercel-build arc.** The production
+deployment at `archlens-action.vercel.app` is live and serving real
+serverless function responses as of `f31a716` + the Output Directory
+settings change.
+
+**Standing lesson**: a fixed root cause and a green build are two
+different milestones, and a pipeline can have more than one broken stage
+stacked behind each other — each one only becomes visible once the stage
+before it starts succeeding. Don't assume "fixed the thing I was
+looking at" means "fully deployed"; keep checking the next stage until
+an actual live production request confirms end-to-end success, exactly
+as done here.
+
+Not yet done (next pending items, unrelated to the build pipeline):
+confirm the free-tier GitHub Action pipeline works end-to-end on a real
+public-repo PR (a PR calling `archlens-ai/archlens-action/action@v1`
+should get a real diagram comment); GitHub Marketplace listing (blocked
+by `action.yml` not being at repo root); Razorpay international-card
+billing (blocked until Dec 16, 2026 at earliest).
