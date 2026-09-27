@@ -14,6 +14,7 @@
     "@mermaid-js/layout-elk": "^0.2.3",
     "@supabase/supabase-js": "^2.45.4",
     "mermaid": "^11.14.0",
+    "patch-package": "^8.0.1",
     "puppeteer-core": "^24.43.0",
     "razorpay": "^2.9.8"
   },

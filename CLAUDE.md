@@ -3317,3 +3317,95 @@ whole problem is that the expected scenario keeps turning out to be
 wrong; verify the failure modes you're NOT sure about too. Not calling
 this done until the actual next deployment is checked — still no
 exceptions.
+
+## 48. The actual, final root cause: Vercel installs with `npm ci --workspace=backend`, not a full monorepo install — reproduced exactly, fixed at the source (2026-09-27)
+
+Item 47's self-locating runner shipped as commit `be3fc64` and was checked
+against the real deployment rather than trusted on the strength of local
+testing alone (per this saga's own standing rule). It failed too — but
+this time it failed usefully, because the diagnostic logging it was
+built specifically to provide did its job:
+
+```
+[run-patch-package] process.cwd()          = /vercel/path0
+[run-patch-package] npm_package_json        = /vercel/path0/package.json
+[run-patch-package] FATAL: could not find node_modules/patch-package/index.js
+  anchor tried: /vercel/path0 (x3), /vercel/path0/scripts
+[run-patch-package] contents of /vercel/path0/node_modules (309 entries): d3-dispatch
+```
+
+`patch-package` genuinely is not anywhere under `/vercel/path0` — not a
+resolution/cwd bug at all, the package is simply never installed there.
+309 entries is far short of the ~510 a full monorepo install produces
+locally. The "d3-dispatch" in that log line is `Array.prototype.filter`
+matching "patch" as a substring of "disPATCH," not a false lead about
+patch-package itself — worth noting only because it looked like one at
+first glance.
+
+**Reproduced the exact mechanism, not just the symptom, before writing a
+fifth fix.** Tried `npm ci --workspace=backend` (Vercel's Root
+Directory is `backend`; workspace-scoped installs are the standard way a
+build tool honors that setting for an npm-workspaces monorepo) against a
+fresh clone of the real repo at `b361476`. It reproduced the failure
+exactly: 309 top-level `node_modules` entries (byte-for-byte the same
+count as the real Vercel log), `patch-package` absent, the identical
+`d3-dispatch` false-positive substring match, the identical anchor list
+in the diagnostic output. This is the real mechanism: **Vercel's install
+step only installs the `backend` workspace's own dependency tree, not
+the monorepo root's own top-level `dependencies`** — and `patch-package`
+has been declared only at the root since it was first added (items
+43-47), because it's tooling for the whole repo's `patches/` directory,
+not backend-specific. The ROOT's own `postinstall` lifecycle script
+still fires either way (confirmed across every single failure 43-47 by
+the `archlens@0.1.0 postinstall` banner) — only the root's *dependencies*
+get excluded from a workspace-scoped install, not its *scripts*. That
+split is exactly specific enough to explain every previous red herring:
+why the banner always looked like a full install was happening, and why
+patch-package's own transitive-dependency deprecation warnings
+(`rimraf`/`npmlog`/`inflight`/etc.) still appeared in every failing log
+(those come from lockfile resolution, which happens regardless of which
+workspace is targeted) even while patch-package itself never landed in
+`node_modules`.
+
+**Fixed at the actual source**: added `patch-package` as a direct
+dependency of `backend/package.json` too (not moved — kept at the root
+as well, since local/CI full-monorepo installs and other tooling still
+expect it there). npm workspaces hoists a workspace's own dependency to
+the shared root `node_modules` when there's no version conflict, exactly
+where every anchor in `run-patch-package.cjs` already knows to look — so
+item 47's self-locating runner and bootstrap needed zero code changes;
+they were already correct, just being asked to find a file that
+genuinely didn't exist yet.
+
+**Verified against the exact reproduction, not a proxy for it**: same
+fresh-clone-of-`b361476` + `npm ci --workspace=backend` scenario, this
+time with `patch-package` added to `backend/package.json` and the
+lockfile regenerated via an ordinary `npm install` (not a lockfile
+delete-and-regenerate, which had previously caused `mermaid` to drift to
+a newer, un-patchable version by accident — redone correctly this time,
+confirmed `mermaid` stayed pinned at `11.14.0` in the lockfile). Result:
+exit 0, both patches apply, `node_modules` now contains `patch-package`
+under the scoped install. Also re-verified: backend's own `tsc --noEmit`
+passes inside the scoped-install tree (the actual thing Vercel needs to
+succeed); a full unscoped `npm ci` afterward still installs and passes
+cleanly (264/264 tests — 246 backend including the 12 real-Chromium
+render integration tests, + 18 action — `tsc --noEmit` clean both
+workspaces, `ncc build` clean) — confirming this is additive, not a
+tradeoff between the scoped and unscoped install paths.
+
+**Standing lesson, sharpened one more time**: items 43 through 47 all
+correctly reproduced *a* local failure that matched the *symptom* of
+each attempt's own theory, and every one of those reproductions was
+real — but none of them reproduced the actual *install command* Vercel
+runs. A fresh `git clone` + plain `npm ci`/`npm install` was never going
+to surface this, because a plain install always installs every
+workspace. The lesson from item 47 ("verify the failure modes you're not
+sure about, not just the one you believe") gets one more layer here:
+also verify you're reproducing the right *command*, not just cwd/env
+permutations of the command you've already been assuming. Once
+`--workspace=backend` was actually tried, this reproduced first try, everything about the four prior failures suddenly had one
+single, simple explanation instead of four separate ones.
+
+Not yet done: confirming this deployment finally goes green — the
+absolute rule holds one more time: not calling this closed until the
+actual next Vercel deployment is checked.
