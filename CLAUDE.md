@@ -3497,3 +3497,86 @@ public-repo PR (a PR calling `archlens-ai/archlens-action/action@v1`
 should get a real diagram comment); GitHub Marketplace listing (blocked
 by `action.yml` not being at repo root); Razorpay international-card
 billing (blocked until Dec 16, 2026 at earliest).
+
+## Item 50: the free tier was completely non-functional — no shared/public-repo fallback ever existed in code, despite being promised in three separate places (2026-09-28)
+
+Anurag's instruction: "whatever left before free tier launch for commercial
+purpose lets do this" — following up on item 49's flagged next step (a
+real end-to-end GitHub Action test before calling the free tier ready).
+Before spending effort standing up that live test, read the actual request
+path the free tier depends on, rather than assume it worked because the
+backend responds to requests at all (item 49 only proved `/api/generate`
+returns 405 for a non-POST request — it never proved a real, keyless
+request succeeds).
+
+**Found a real, would-have-failed-in-production gap**: `action.yml`'s own
+`archlens-api-key` input description says "public repos may use the shared
+free-tier key"; `action/src/config.ts` has a code comment saying "Public
+repos get a shared, rate-limited free-tier key server-side if none is
+supplied"; the product brief and README both price "free for public
+repos." **None of this was ever actually implemented.** Traced the real
+path: when `archlens-api-key` isn't set, `config.ts` sends an empty
+string, `client.ts` always sends `authorization: Bearer ${apiKey}`
+regardless (so an empty key becomes the literal header `Bearer ` with
+nothing after it), and `api/generate.ts`'s old `extractApiKey` turned that
+into `null` — which `handleGenerateRequest` immediately rejects with a
+flat `401 unauthorized`. There was no code path anywhere that recognized
+"no key supplied" as "use the shared free-tier pool" — every single
+request from a public repo with no key configured would have failed
+outright. This had never been caught because no dry-run script or test in
+this entire project has ever called the generate endpoint with a missing
+key and expected success — every fixture either seeds and passes a real
+key, or deliberately tests the 401 rejection path itself.
+
+**Fixed**: `resolveApiKey()` (new, exported from `backend/lib/generate-
+handler.ts`) resolves a missing/empty/malformed Authorization header to a
+new constant, `SHARED_FREE_TIER_API_KEY` (`backend/lib/quota.ts`), instead
+of `null` — deliberately NOT a secret (it's a routing sentinel, safe to
+ship in this public repo's own source and the Action's public bundle; the
+real gate is the shared row's own `plan`/`active`/quota fields, identical
+to any other key). `api/generate.ts` now calls `resolveApiKey(req.headers.
+authorization)` instead of its own inline (and subtly buggy in exactly
+this way) `extractApiKey`. `handleGenerateRequest` itself is untouched and
+still correctly 401s a genuinely-null apiKey (its own existing test for
+that keeps passing) — `resolveApiKey` is what stands between "no header
+at all" and that null, so the pure handler never needs to know the
+free-tier concept exists.
+
+`db/schema.sql` gained an idempotent seed (`insert ... on conflict do
+nothing`) creating one `orgs` row and one `api_keys` row for the shared
+key (`plan: 'free'`, `active: true`, the existing `PLAN_LIMITS.free = 100`
+cap applies to it exactly like any other free-plan key) — this is the
+literal mechanism the `free: 100` comment in `quota.ts` already assumed
+existed ("capped hard so one noisy repo can't burn the whole free-tier LLM
+budget for everyone else") but that no seed data had ever actually
+created.
+
+**Verified**: 5 new tests (`resolveApiKey`'s Bearer-token/missing-header/
+empty-token/malformed-header cases, plus a `handleGenerateRequest` test
+seeding the shared key and confirming a resolved-free-tier request gets
+a normal 200/svgUrl response, not special-cased differently from a paid
+key) — 246 -> 251 backend tests, full suite green (251/251, including all
+12 real-Chromium render integration tests with `ARCHLENS_TEST_CHROMIUM_
+PATH` set), `tsc --noEmit` clean on both workspaces.
+
+**Not yet done, blocking the actual live fix**: this is a code-only fix
+until two things happen, neither of which this agent can do directly —
+(1) the seed SQL needs to run against the real, live `rckavxyujtbmoanaxvff`
+Supabase project (blocked by the same "Modify Shared Resources"
+auto-mode guardrail that blocked item 42's schema apply — a live database
+write correctly needs Anurag's own hand, not automated); (2) the commit
+needs `git push`ing (no GitHub write credentials in this sandbox, same as
+every prior push in this saga) before Vercel redeploys with the fix live.
+Until both land, the free tier remains broken exactly as described above,
+same as before this item — this item fixed the code, not (yet) the
+running system.
+
+**Standing lesson**: "the backend responds" (item 49's verification) and
+"the backend does what the product's own pricing promises for the exact
+request shape it needs to handle" are different claims, and only the
+second one is dispositive. Also worth noting for whoever reviews this
+project's history: three separate places (an Action input description, a
+code comment, a pricing page) all asserted a specific piece of behavior
+existed, and all three were wrong at the same time — a comment or a docs
+line asserting behavior is not evidence the behavior was ever built;
+tracing the actual request path was what caught it.

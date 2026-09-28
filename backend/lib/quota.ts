@@ -26,6 +26,21 @@ export const PLAN_LIMITS: Record<ApiKeyStatus["plan"], number> = {
 };
 
 /**
+ * The key every request resolves to when the caller supplies no
+ * `archlens-api-key` at all (see action/src/config.ts's own comment: "Public
+ * repos get a shared, rate-limited free-tier key server-side if none is
+ * supplied"). This is not a secret — it's a routing sentinel, not a
+ * credential — so it's safe to live in this public repo's source and in the
+ * Action's own publicly-readable bundle. Real access control is the shared
+ * row's own `active`/`plan`/quota fields in the `api_keys` table (see
+ * db/schema.sql's seed section), the same as any other key; anyone who
+ * copies this string out of the source gets exactly the same shared,
+ * hard-capped free-tier pool everyone else on the free tier already shares,
+ * nothing more.
+ */
+export const SHARED_FREE_TIER_API_KEY = "archlens-shared-free-tier";
+
+/**
  * Deterministic in-memory store used by tests and as the fallback for local
  * development without Supabase configured. Never used in production.
  */

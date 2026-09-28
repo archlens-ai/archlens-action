@@ -15,7 +15,7 @@ import {
   annotatePreexistingParticipants,
 } from "./diff-classify.js";
 import { computeDiffHash, type DiagramCache } from "./cache.js";
-import type { QuotaStore } from "./quota.js";
+import { SHARED_FREE_TIER_API_KEY, type QuotaStore } from "./quota.js";
 
 export interface GenerateRequestBody {
   owner: string;
@@ -49,6 +49,27 @@ export interface GenerateDeps {
 
 function detectDiagramType(source: string): "flowchart" | "sequence" {
   return /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
+}
+
+/**
+ * Resolves the raw `Authorization` header into the API key
+ * `handleGenerateRequest` should use. A caller that supplies its own
+ * `Bearer <key>` (a paying solo/team customer) gets that key verbatim. A
+ * caller with no Authorization header at all, or an empty/whitespace-only
+ * Bearer token — exactly what action/src/config.ts sends when the user
+ * doesn't set `archlens-api-key`, the free-tier/public-repo default path —
+ * resolves to the shared free-tier key instead of null, so it flows through
+ * the exact same quota/plan machinery as any other key rather than hitting
+ * handleGenerateRequest's "missing API key" 401. `handleGenerateRequest`
+ * itself still treats a genuinely-null apiKey as an error (see its own
+ * "rejects a missing API key" test) — this function is what stands between
+ * "no header at all" and that null, so the pure handler never has to know
+ * about the free-tier concept itself.
+ */
+export function resolveApiKey(authorizationHeader: string | null | undefined): string {
+  if (!authorizationHeader?.startsWith("Bearer ")) return SHARED_FREE_TIER_API_KEY;
+  const key = authorizationHeader.slice("Bearer ".length).trim();
+  return key || SHARED_FREE_TIER_API_KEY;
 }
 
 function isApiError(x: unknown): x is ApiError {

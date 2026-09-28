@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { handleGenerateRequest, type GenerateRequestBody } from "../lib/generate-handler.js";
+import { handleGenerateRequest, resolveApiKey, type GenerateRequestBody } from "../lib/generate-handler.js";
 import { InMemoryDiagramCache } from "../lib/cache.js";
-import { InMemoryQuotaStore } from "../lib/quota.js";
+import { InMemoryQuotaStore, SHARED_FREE_TIER_API_KEY } from "../lib/quota.js";
 import type { LlmProvider } from "../lib/llm.js";
 
 function makeBody(overrides: Partial<GenerateRequestBody> = {}): GenerateRequestBody {
@@ -39,12 +39,52 @@ function makeDeps(overrides: { llmOutput?: string | string[] } = {}) {
   return { quotaStore, cache, llm, render, storeSvg, generateMermaid };
 }
 
+describe("resolveApiKey", () => {
+  it("passes through a real Bearer token verbatim", () => {
+    expect(resolveApiKey("Bearer alk_live_valid")).toBe("alk_live_valid");
+  });
+
+  it("falls back to the shared free-tier key when no Authorization header is present", () => {
+    expect(resolveApiKey(undefined)).toBe(SHARED_FREE_TIER_API_KEY);
+    expect(resolveApiKey(null)).toBe(SHARED_FREE_TIER_API_KEY);
+  });
+
+  it("falls back to the shared free-tier key on an empty/whitespace-only Bearer token", () => {
+    // Exactly what action/src/config.ts sends when archlens-api-key isn't set:
+    // `Bearer ${""}"` -> "Bearer " with nothing after it.
+    expect(resolveApiKey("Bearer ")).toBe(SHARED_FREE_TIER_API_KEY);
+    expect(resolveApiKey("Bearer    ")).toBe(SHARED_FREE_TIER_API_KEY);
+  });
+
+  it("falls back to the shared free-tier key on a malformed (non-Bearer) header", () => {
+    expect(resolveApiKey("Basic dXNlcjpwYXNz")).toBe(SHARED_FREE_TIER_API_KEY);
+  });
+});
+
 describe("handleGenerateRequest", () => {
   it("rejects a missing API key", async () => {
     const deps = makeDeps();
     const { status, body } = await handleGenerateRequest(makeBody(), null, deps);
     expect(status).toBe(401);
     expect((body as any).code).toBe("unauthorized");
+  });
+
+  it("serves a request resolved to the shared free-tier key exactly like any other active key", async () => {
+    const deps = makeDeps();
+    deps.quotaStore.seed(SHARED_FREE_TIER_API_KEY, {
+      active: true,
+      orgId: "org_free_tier_shared",
+      plan: "free",
+      planLimit: 100,
+      usedThisMonth: 0,
+    });
+    const { status, body } = await handleGenerateRequest(
+      makeBody(),
+      resolveApiKey(undefined),
+      deps
+    );
+    expect(status).toBe(200);
+    expect((body as any).svgUrl).toBeTruthy();
   });
 
   it("rejects an unknown/inactive API key", async () => {

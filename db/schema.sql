@@ -89,3 +89,20 @@ grant execute on function increment_api_key_usage(text) to service_role;
 grant execute on function reset_monthly_usage() to service_role;
 alter default privileges in schema public grant select, insert, update, delete on tables to service_role;
 alter default privileges in schema public grant execute on functions to service_role;
+
+-- Shared free-tier key: the row every request resolves to when the caller
+-- supplies no archlens-api-key at all (see backend/lib/generate-handler.ts's
+-- resolveApiKey and backend/lib/quota.ts's SHARED_FREE_TIER_API_KEY — the
+-- literal key string here MUST match that constant exactly). Not a secret:
+-- it's a routing sentinel that ships in this public repo's own source and
+-- the Action's own public bundle, so anyone can already read it; the only
+-- real gate is this row's own plan/active/quota fields, identical to any
+-- other key. idempotent (on conflict do nothing) so re-running this file
+-- against an already-seeded project is always safe.
+insert into orgs (id, name)
+values ('archlens-free-tier-shared', 'ArchLens Free Tier (shared, public repos)')
+on conflict (id) do nothing;
+
+insert into api_keys (key, org_id, plan, active, used_this_month)
+values ('archlens-shared-free-tier', 'archlens-free-tier-shared', 'free', true, 0)
+on conflict (key) do nothing;
