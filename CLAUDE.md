@@ -3730,3 +3730,72 @@ a genuine end-to-end GitHub Action test against a real public-repo PR — this
 item is what makes that test worth running for the first time, since every
 prior attempt would have failed at this exact render step regardless of
 anything Action-side.
+
+## Item 52: correction to item 51's Vercel duration claim, plus the real fix — a 15s internal render timeout, not a platform cap, was killing every production render (2026-09-28)
+
+**Correction to item 51 (same day)**: item 51's "Real, disclosed operational
+risk" paragraph above states that "Vercel's Hobby (free) plan hard-caps
+serverless function duration at 10 seconds regardless of any `vercel.json`
+`maxDuration` setting." **This is wrong.** Checked against Vercel's own
+current docs (`vercel.com/docs/functions/configuring-functions/duration`):
+with Fluid Compute enabled — confirmed enabled on this Vercel project — the
+Hobby plan's actual default AND maximum function duration is **300 seconds**
+(Pro/Enterprise go higher still). The 10-second figure doesn't exist on the
+Hobby plan at all under Fluid Compute. Leaving that paragraph above uncorrected
+rather than deleting it, per this project's own discipline (item 11, item
+15) of not silently editing a wrong claim out of the record.
+
+Practical effect: the platform was never the blocker. No Vercel plan
+upgrade, no dashboard duration/memory config, was ever needed. The real bug
+was entirely inside our own code.
+
+**The actual bug, found by testing the item 51 fix live**: after item 51's
+`@sparticuz/chromium` fix shipped (`d01b9d8`), the live endpoint (tested via
+a real in-browser `fetch()` against `archlens-action.vercel.app/api/generate`,
+since neither this sandbox's nor Anurag's own machine's network can reach
+that host directly) returned a new failure, reproduced identically on two
+separate real requests:
+
+```
+502 upstream_generation_failed: "Waiting failed: 15000ms exceeded"
+```
+
+at ~20-22s total wall time each time — not a timeout, then success on retry;
+the same failure, twice. Traced (via `grep` confirming no other timeout
+constant exists anywhere in the render call chain) to
+`renderMermaidToSvg`'s own hardcoded default:
+
+```typescript
+const timeoutMs = opts.timeoutMs ?? 15_000;
+```
+
+15 seconds was sized around this sandbox's own fast local Chromium (renders
+complete in 1.6-2.5s here). It was never re-sized for a cold
+`@sparticuz/chromium` extract-and-launch on a real, resource-constrained (1
+vCPU) Vercel Hobby container, which item 51 had just introduced as the
+production code path for the first time. The mismatch was invisible until
+item 51's own fix made this the very next thing to fail.
+
+**Fix** (`61a6d70`): raised the default to `45_000`ms. Comfortably covers
+the observed 20-22s worst case with real headroom for a slower cold start,
+while still failing fast (not silently hanging) on a genuinely stuck render.
+Still far under the real 300s platform limit corrected above, so this is a
+pure code change — nothing to configure on Vercel's side.
+
+**Verified before committing**:
+1. `tsc --noEmit` clean on a fresh clone with the same change applied.
+2. Full backend suite: 252/252 passing, including the item 51 serverless-
+   chromium regression test — the timeout bump doesn't touch local/CI
+   render timings (all still 1.6-2.3s).
+3. `git diff --stat -w` on the real repo showed exactly the one intended
+   file (`backend/lib/mermaid.ts`, +12/-1) before commit — no accidental
+   drag-along changes.
+
+**Status**: fix is committed on `main` locally (`61a6d70`) but **not yet
+pushed** — same as every other fix in this project, Anurag runs `git push
+origin main` himself. Once pushed and Vercel redeploys, the free-tier
+render path needs a third live test (same no-Authorization-header POST used
+twice already) to confirm a real 200 + `svgUrl` instead of the 502 above —
+that live confirmation, not this commit, is the actual gate before the free
+tier can be called working end-to-end, and before any public announcement
+(Reddit, HN, etc.) makes sense.
