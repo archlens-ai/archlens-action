@@ -1390,7 +1390,18 @@ export async function renderMermaidToSvg(
     throw new Error(`Refusing to render invalid diagram: ${validation.error}`);
   }
 
-  const timeoutMs = opts.timeoutMs ?? 15_000;
+  // Item 51 follow-up (CLAUDE.md): 15s was the pre-existing default,
+  // sized around this sandbox's own fast local Chromium. The real Vercel
+  // container (1 vCPU Hobby, cold @sparticuz/chromium extraction + launch)
+  // measured 20-22s wall time on two separate real production requests
+  // before this exact internal race hit the old 15000ms cap and failed
+  // with "Waiting failed: 15000ms exceeded" -- confirmed reproducible, not
+  // a one-off cold start. Raised to 45s, still far under Vercel's actual
+  // platform-level function duration limit (300s on Hobby with Fluid
+  // Compute, confirmed via Vercel's own docs -- NOT the 10s this project
+  // had assumed earlier in this same item), leaving real headroom for a
+  // slower cold start while still failing fast on a genuinely stuck render.
+  const timeoutMs = opts.timeoutMs ?? 45_000;
   // The render worker owns its own Chromium (via a Docker base image or
   // @sparticuz/chromium on serverless) — never assumed to be the system
   // default, since that varies wildly across deployment targets.
