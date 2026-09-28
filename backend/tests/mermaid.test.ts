@@ -668,6 +668,37 @@ describe("renderMermaidToSvg (integration)", () => {
     expect(svg).toContain("</svg>");
   }, 30_000);
 
+  // Item 51 (CLAUDE.md): every real production request was failing with
+  // "An `executablePath` or `channel` must be specified for
+  // `puppeteer-core`" because nothing ever actually resolved a Chromium
+  // binary in the deployed Vercel function -- api/generate.ts calls
+  // renderMermaidToSvg() with no opts at all, exactly like this test does,
+  // relying entirely on the VERCEL-gated @sparticuz/chromium fallback.
+  // Deliberately does NOT pass executablePath and unsets
+  // PUPPETEER_EXECUTABLE_PATH, so this only passes if the fallback itself
+  // actually launches a real, working Chromium -- not just that some OTHER
+  // path (opts.executablePath / PUPPETEER_EXECUTABLE_PATH) happens to work,
+  // which is exactly what every other test in this file already covers and
+  // is exactly why this specific gap went undetected until a real Vercel
+  // deployment hit it.
+  it("falls back to a bundled @sparticuz/chromium binary when running on Vercel with no other Chromium configured", async () => {
+    const previousVercel = process.env.VERCEL;
+    const previousExecutablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    process.env.VERCEL = "1";
+    delete process.env.PUPPETEER_EXECUTABLE_PATH;
+    try {
+      const { svg } = await renderMermaidToSvg(
+        'flowchart TD\n  A["Order Service"] --> B["Refund Worker"]\n  class A endpoint\n  class B logic'
+      );
+      expect(svg).toContain("<svg");
+      expect(svg).toContain("</svg>");
+    } finally {
+      if (previousVercel === undefined) delete process.env.VERCEL;
+      else process.env.VERCEL = previousVercel;
+      if (previousExecutablePath !== undefined) process.env.PUPPETEER_EXECUTABLE_PATH = previousExecutablePath;
+    }
+  }, 30_000);
+
   // Mermaid's default flowchart config renders node/subgraph labels as HTML
   // inside <foreignObject> rather than plain SVG <text>. ARCHLENS_THEME_CONFIG
   // sets `htmlLabels: false` as a defensive portability choice (plain <text>

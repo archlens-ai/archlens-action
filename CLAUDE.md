@@ -3580,3 +3580,153 @@ code comment, a pricing page) all asserted a specific piece of behavior
 existed, and all three were wrong at the same time — a comment or a docs
 line asserting behavior is not evidence the behavior was ever built;
 tracing the actual request path was what caught it.
+
+## Item 51: the free-tier auth fix (item 50) exposed the NEXT stage failing — puppeteer-core had no Chromium binary in the live Vercel function at all, meaning no request (free or paid) could ever render a diagram in production (2026-09-28)
+
+Once Anurag confirmed item 50's push + Supabase seed were both done, verified
+live rather than taking that on faith: hit the real production endpoint
+(`archlens-action.vercel.app/api/generate`, the true origin `api.archlens.dev`
+turned out to not even resolve — a separate, smaller gap, see below) with a
+real POST and no Authorization header, from inside a real browser tab (this
+sandbox's own `curl`/`device_bash` both have no egress to either host at all,
+confirmed by two separate failed attempts first).
+
+**Good news first: item 50's fix is genuinely live.** The request did NOT
+401 — it got all the way past `resolveApiKey`/quota/the LLM call and failed
+one stage further in, at the actual render step:
+
+```json
+{"code":"upstream_generation_failed","message":"An `executablePath` or `channel` must be specified for `puppeteer-core`"}
+```
+
+**This is a bigger deal than a free-tier-specific bug: it means literally no
+request, free or paid, has ever been able to render a diagram against the
+live production backend.** `resolveApiKey`'s fix (item 50) only ever
+determines WHICH key's quota a request draws against — every request,
+regardless of key, reaches the identical `renderMermaidToSvg()` call
+afterward, and that call had never had a Chromium binary available to it in
+the deployed environment at all.
+
+**This was not a new regression — it was always going to fail, and
+`docs/ARCHITECTURE.md` had already predicted exactly this, explicitly,
+before any of this was deployed:** its own "Deployment topology" section
+states plainly "Puppeteer/Chromium is a poor fit for Vercel's ephemeral
+serverless functions" and lists two supported options, both already
+anticipated by `renderMermaidToSvg`'s own `executablePath` parameter — a
+separate always-on container (recommended for launch), or
+`@sparticuz/chromium-min` + `puppeteer-core` inside the Vercel function
+itself. `mermaid.ts`'s own code comment on the executablePath line even said
+"via a Docker base image or `@sparticuz/chromium` on serverless" — describing
+a fallback that was never actually written. Neither option was ever
+implemented before this item; the whole items-43-49 Vercel saga fixed the
+*build*/*install* pipeline and never actually exercised the real render path
+end to end against production until now.
+
+**Fixed by implementing the architecture doc's second option** (consolidating
+onto Vercel rather than provisioning a brand-new always-on-container service
+— consistent with every other infra decision this project has made,
+minimizing new accounts/services Anurag has to set up and monitor):
+`@sparticuz/chromium` (the full package, not `-min` — see below) added as a
+real dependency of `backend/package.json`. `renderMermaidToSvg()`
+(`backend/lib/mermaid.ts`) now resolves Chromium in this priority order:
+(1) `opts.executablePath` if the caller passed one explicitly — every
+existing test/dry-run script does this unconditionally, so none of them are
+affected at all; (2) `PUPPETEER_EXECUTABLE_PATH`, for a real local/CI
+Chromium (this sandbox's Playwright binary, or a future dedicated
+container); (3) only if NEITHER is set AND `process.env.VERCEL` is truthy
+(Vercel sets this automatically on every real deployment, so this can never
+accidentally engage locally) — a new `resolveServerlessChromium()` helper
+lazily `import()`s `@sparticuz/chromium` and calls its `.executablePath()`
+(which decompresses a bundled brotli Chromium binary to `/tmp` on first use,
+no network fetch) plus its own recommended launch `args` (single-process,
+software-GL/swiftshader, capped disk cache — a bare `--no-sandbox` alone,
+the pre-existing local/CI args, is not enough for this binary to launch
+reliably in a Lambda-style container). Memoized at module scope so the real
+decompression cost (confirmed below) is paid once per warm container
+instance, not once per request.
+
+**`@sparticuz/chromium` (full) chosen over `-min` deliberately**: `-min`
+exists specifically for platforms with a strict function-size ceiling (its
+own npm package is ~46KB vs. full's ~70MB, because `-min` expects you to
+fetch the actual binary pack from a remote URL at cold start instead of
+bundling it) — but that trades a real runtime network dependency (another
+thing that can fail, another cold-start latency source) for deployment size,
+and Vercel's current serverless function limit (250MB unzipped) has ample
+room for the full package alongside this project's other dependencies
+(mermaid, `@mermaid-js/layout-elk`, supabase-js, razorpay). Simpler and more
+reliable was the right tradeoff here, not the default "usually recommended for
+Lambda" choice — worth reconsidering only if the deployed function size
+becomes a real problem later, which nothing here indicates yet.
+
+**Verified for real, not assumed from the package's own docs**:
+1. Confirmed `puppeteer-core@24.43.0` (this project's pinned version) and
+   `@sparticuz/chromium@153.0.0` (latest) actually launch, navigate, and
+   evaluate together — a real, standalone smoke test in an isolated
+   directory, not just "the versions look compatible."
+2. Reproduced the EXACT production failure condition locally before trusting
+   the fix: unset `PUPPETEER_EXECUTABLE_PATH`/`ARCHLENS_TEST_CHROMIUM_PATH`,
+   set `VERCEL=1`, called `renderMermaidToSvg()` with zero options — exactly
+   how `api/generate.ts` calls it in production. First call (cold,
+   real `/tmp` extraction of the ~200MB binary): rendered a real SVG in
+   2.2-2.5s. Second call in the same process (warm, memoized executablePath):
+   1.7s — confirms the memoization actually saves real time, not just in
+   theory.
+3. A new permanent regression test (`tests/mermaid.test.ts`,
+   "falls back to a bundled @sparticuz/chromium binary when running on
+   Vercel with no other Chromium configured") does the same thing inside the
+   real test suite — deliberately does NOT pass `executablePath`, unlike
+   every other test in this file, so it only passes if the fallback itself
+   genuinely works, not because some other resolution path happens to.
+4. Full suite: 246 -> 252 backend tests, all passing (including the 12
+   pre-existing real-Chromium render integration tests, confirming zero
+   regression to the local/CI path), `tsc --noEmit` clean on both
+   workspaces.
+
+**A smaller, separate gap found and worth fixing next, not fixed in this
+item**: `api.archlens.dev` (the domain `action.yml`'s own default
+`api-base-url` points at, and what every doc/README references) does not
+serve anything right now — a real browser navigation to it (twice, from two
+different points in this same session) rendered Chrome's own network-error
+interstitial page, not any real HTTP response (not even an error JSON body)
+— consistent with the domain having no DNS record pointed at Vercel at all,
+though the exact underlying error code wasn't directly readable through this
+session's browser-automation tooling (it can't screenshot/read text from a
+native browser error interstitial). The Action's actual live traffic today
+can only reach `archlens-action.vercel.app` directly. This means EVERY current
+Action installation pointing at the documented default
+(`https://api.archlens.dev`) is currently unable to reach the backend at
+all, regardless of the render fix above — this needs a DNS record pointing
+`api.archlens.dev` at the Vercel deployment (a custom domain add in Vercel's
+own dashboard, Anurag's own step, same class of task as the GitHub org/
+Vercel project/Razorpay work he's done throughout this project) before the
+free tier is reachable via its own documented, advertised URL rather than
+only the raw `.vercel.app` one.
+
+**Real, disclosed operational risk, not fixed by code and not fully
+resolvable from this sandbox**: the render step alone now costs ~1.7-2.5s
+warm/cold in addition to the LLM call (typically 1-3s) and quota/DB
+round-trips already in the same request. Vercel's Hobby (free) plan hard-caps
+serverless function duration at 10 seconds regardless of any `vercel.json`
+`maxDuration` setting — and no `vercel.json` was added here (per item 37's
+own established reasoning: a guessed memory/duration config that can't be
+verified from this sandbox risks breaking a real deploy more than it helps,
+especially since Vercel can refuse a deploy outright if a configured
+`maxDuration` exceeds what the account's actual plan allows). **Anurag needs
+to check his own Vercel project's plan and, if on Hobby, either upgrade to
+Pro (60s cap) or raise the function's memory/duration via the dashboard's
+own per-function settings UI** (Project Settings → Functions), especially
+before a real cold start + a large/complex diff (which escalates to the
+slower `claude-sonnet-5` tier per item 21) has to clear the LLM call AND a
+cold Chromium extraction AND the actual render inside one request. This is
+flagged rather than guessed at, consistent with this project's whole
+disclosed-not-hidden discipline.
+
+**Status**: the free tier's actual render path is now code-complete and
+locally verified end-to-end under the real production failure condition —
+not yet re-verified against the live deployment itself (this fix needs
+Anurag's `git push` + a Vercel redeploy first, same two-step pattern as item
+50). Once live, the real next step is still what item 49 originally flagged:
+a genuine end-to-end GitHub Action test against a real public-repo PR — this
+item is what makes that test worth running for the first time, since every
+prior attempt would have failed at this exact render step regardless of
+anything Action-side.

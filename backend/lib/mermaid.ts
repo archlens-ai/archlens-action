@@ -1315,6 +1315,30 @@ function buildElkFrontmatter(look?: "classic" | "handDrawn" | "neo"): string {
   return `config:\n  layout: elk\n${lookLine}  elk:\n    mergeEdges: true\n    nodePlacementStrategy: NETWORK_SIMPLEX\n    edgeRouting: POLYLINE\n`;
 }
 
+/**
+ * Resolves a Chromium binary + launch args suitable for Vercel's serverless
+ * runtime, via `@sparticuz/chromium` (a brotli-compressed Chromium build
+ * bundled in the npm package itself, decompressed to `/tmp` on first use —
+ * no network fetch, unlike the `-min` variant). Memoized at module scope:
+ * `chromium.executablePath()` does real disk I/O (extracting a ~200MB
+ * binary), a real cost worth paying once per warm container instance, not
+ * once per request — a warm Vercel function reuses the same module instance
+ * (and the same `/tmp`) across invocations, so the second call in the same
+ * container resolves instantly from the memoized promise instead of
+ * re-extracting.
+ */
+let serverlessChromiumPromise: Promise<{ executablePath: string; args: string[] }> | null = null;
+function resolveServerlessChromium(): Promise<{ executablePath: string; args: string[] }> {
+  if (!serverlessChromiumPromise) {
+    serverlessChromiumPromise = (async () => {
+      const chromium = (await import("@sparticuz/chromium")).default;
+      const executablePath = await chromium.executablePath();
+      return { executablePath, args: chromium.args };
+    })();
+  }
+  return serverlessChromiumPromise;
+}
+
 export async function renderMermaidToSvg(
   source: string,
   opts: {
@@ -1370,7 +1394,21 @@ export async function renderMermaidToSvg(
   // The render worker owns its own Chromium (via a Docker base image or
   // @sparticuz/chromium on serverless) — never assumed to be the system
   // default, since that varies wildly across deployment targets.
-  const executablePath = opts.executablePath ?? process.env.PUPPETEER_EXECUTABLE_PATH;
+  //
+  // This comment described the @sparticuz/chromium fallback as if it
+  // existed for months (see CLAUDE.md item 51) -- it never did until now.
+  // opts.executablePath (explicit, e.g. every test/dry-run script) and
+  // PUPPETEER_EXECUTABLE_PATH (a real local/CI Chromium, e.g. this
+  // sandbox's Playwright binary) both still take priority unconditionally
+  // -- the serverless fallback below only ever activates when NEITHER is
+  // set, which in practice means "this is a real Vercel deployment with no
+  // Chromium of its own," confirmed via Vercel's own always-set VERCEL env
+  // var so this fallback can never accidentally trigger locally.
+  const usingServerlessChromium =
+    !opts.executablePath && !process.env.PUPPETEER_EXECUTABLE_PATH && !!process.env.VERCEL;
+  const serverlessChromium = usingServerlessChromium ? await resolveServerlessChromium() : null;
+  const executablePath =
+    opts.executablePath ?? process.env.PUPPETEER_EXECUTABLE_PATH ?? serverlessChromium?.executablePath;
   const diagramType = /^sequenceDiagram/i.test(source.trim()) ? "sequence" : "flowchart";
 
   let styledSource = applyArchLensStyling(source);
@@ -1384,7 +1422,14 @@ export async function renderMermaidToSvg(
   try {
     browser = await Promise.race([
       puppeteer.launch({
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        // @sparticuz/chromium's own recommended launch args (single-process,
+        // swiftshader software GL, a capped disk cache, etc.) are all tuned
+        // for a read-only, no-GPU, memory-constrained Lambda-style container
+        // -- a plain "--no-sandbox" alone (the pre-existing local/CI args)
+        // is not enough for its bundled binary to launch reliably there.
+        args: serverlessChromium
+          ? [...serverlessChromium.args, "--no-sandbox", "--disable-setuid-sandbox"]
+          : ["--no-sandbox", "--disable-setuid-sandbox"],
         ...(executablePath ? { executablePath } : {}),
       }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`render timed out after ${timeoutMs}ms`)), timeoutMs)),
