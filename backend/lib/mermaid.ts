@@ -1455,6 +1455,37 @@ export async function renderMermaidToSvg(
     // reason in production, where a render worker with no visibility into
     // its own browser errors is much harder to debug from logs alone.
     page.on("pageerror", (err) => console.error("[archlens-render][pageerror]", err));
+    // item 53: `pageerror` alone still left every production failure of this
+    // render (three real, identically-reproduced "Waiting failed: 45000ms
+    // exceeded" requests) with ZERO corroborating output in Vercel's logs.
+    // `pageerror` only catches a synchronous exception thrown in the page --
+    // it does NOT catch an unhandled rejection from a failed dynamic
+    // `import()` (mermaid's diagram renderers are lazy-chunk-loaded), and it
+    // does NOT catch a plain failed/404 network request for a chunk file
+    // either. Any of those would explain a silent hang with nothing in the
+    // one listener we had. Added here, not to fix the bug, but so the next
+    // production failure actually says why instead of "waitForFunction
+    // failed" a fourth time with no other signal:
+    page.on("console", (msg) => console.log(`[archlens-render][console:${msg.type()}]`, msg.text()));
+    page.on("requestfailed", (req) =>
+      console.error("[archlens-render][requestfailed]", req.url(), req.failure()?.errorText),
+    );
+    page.on("response", (res) => {
+      if (!res.ok()) console.error("[archlens-render][response-not-ok]", res.status(), res.url());
+    });
+    await page.evaluateOnNewDocument(() => {
+      // Same idiom as __archlensRender below: `globalThis` cast to an
+      // explicit shape instead of the typed (DOM-only) `window`, so this
+      // typechecks fine under this file's plain ES2022 lib -- see the item
+      // 53 comment above for why this listener exists at all.
+      (
+        globalThis as unknown as {
+          onunhandledrejection: ((event: { reason: unknown }) => void) | null;
+        }
+      ).onunhandledrejection = (event) => {
+        console.error("[archlens-render][unhandledrejection]", event.reason);
+      };
+    });
     await page.goto(url, { waitUntil: "networkidle0", timeout: timeoutMs });
     await page.waitForFunction("window.__archlensReady === true", { timeout: timeoutMs });
 

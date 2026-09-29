@@ -3799,3 +3799,135 @@ twice already) to confirm a real 200 + `svgUrl` instead of the 502 above —
 that live confirmation, not this commit, is the actual gate before the free
 tier can be called working end-to-end, and before any public announcement
 (Reddit, HN, etc.) makes sense.
+
+## Item 53: item 52's fix didn't fix it — render genuinely hangs, not slow; added a `vercel.json` includeFiles fix (best hypothesis) plus real diagnostics so the next failure isn't another silent guess (2026-09-29)
+
+**Status update on item 52**: it did get pushed (`61a6d70`, `53aa358` are both
+on `origin/main`, Vercel redeployed from `53aa358`). But the 45s timeout bump
+did **not** fix the free tier. Enabled Vercel's request logging (previously
+off) with Anurag's explicit go-ahead, then ran the same no-Authorization-
+header POST against `/api/generate` a third time. Same failure, identical
+error text, for the full 45 seconds:
+
+```
+"Waiting failed: 45000ms exceeded"
+```
+
+**This falsifies "just needs more time."** Two of the three failing requests
+were back-to-back (the second should have hit an already-warm container).
+Both failed identically at the new cap. Raising a timeout again would just
+move the wall clock a third time — the render is genuinely stuck, not slow.
+
+**Where it's stuck, confirmed via Vercel's request-log detail panel**: the
+Anthropic LLM call and both Supabase calls succeed on every single request
+(visible in the panel's "External APIs" section, every time). The hang is
+isolated entirely to the Puppeteer render step — and the exact error text
+("Waiting failed: ...") is Puppeteer's own wording specifically for
+`waitForFunction`/`waitForSelector` timeouts, not `page.goto`'s distinct
+"Navigation timeout" wording — so it's specifically the
+`page.waitForFunction("window.__archlensReady === true", ...)` call that
+never resolves. `page.goto(..., { waitUntil: "networkidle0" })` completes
+fine every time.
+
+**Leading hypothesis**: no `vercel.json` exists anywhere in this repo.
+Confirmed via `raw.githubusercontent.com` fetch of both `/vercel.json` and
+`/backend/vercel.json` returning 404 before this fix, and independently via
+`ls` on the real repo. The render pipeline serves `mermaid`'s and
+`@mermaid-js/layout-elk`'s own `dist/**` files to the headless page through a
+local `http.createServer()`, resolved via `require.resolve(...)` plus a
+runtime-computed relative path from the incoming request — not a static
+`import`/`require` string. That's exactly the class of reference Vercel's
+default file-tracer (`@vercel/nft`) can fail to statically discover, and
+exactly the class of bug this file's own comments say already bit this
+project once before locally ("a 404 on mermaid's internal chunk imports").
+With no `includeFiles` configured, a genuinely 404ing or missing chunk file
+served locally by our own bundle server would explain the render silently
+never finishing.
+
+**Confirmed the correct `vercel.json` location before writing anything**:
+`.vercel/project.json` links from the repo root, but `backend/api/generate.ts`
+is what's actually being invoked as `/api/generate` in production, and there
+is no root-level `api/` directory anywhere in this repo — Vercel's
+zero-config routing only ever looks for `api/**` at the project's configured
+Root Directory, so Root Directory must be `backend`. That means the file
+belongs at `backend/vercel.json`, with `includeFiles` glob paths relative to
+`backend/`, not the repo root. Checked Vercel's own docs
+(`vercel.com/docs/project-configuration/vercel-json#functions`) to confirm
+`includeFiles` takes a single glob string (node-glob/minimatch syntax, so
+brace expansion works) rather than an array, before writing it.
+
+**Fix, part 1** (`backend/vercel.json`, new file):
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/generate.ts": {
+      "includeFiles": "node_modules/{mermaid,@mermaid-js/layout-elk}/dist/**"
+    }
+  }
+}
+```
+
+**Being honest about this fix's actual confidence level**: this is a strong,
+evidence-consistent hypothesis, not a confirmed root cause. Nothing has
+directly proven a missing file is the cause — the existing `pageerror`
+listener produced zero output on every one of the three failing requests
+("No logs found for this request" in Vercel's panel even with logging on),
+so there has never been a concrete error line pointing at this specifically.
+It's entirely possible this fix does nothing and the fourth live test fails
+identically.
+
+**Fix, part 2** (`backend/lib/mermaid.ts`): added real diagnostics so that if
+part 1 is wrong, the next failure actually says why instead of repeating the
+same bare timeout a fourth time. `pageerror` only catches a *synchronous*
+exception thrown in the page — it does not catch an unhandled rejection from
+a failed dynamic `import()` (mermaid's diagram renderers are lazy-chunk-
+loaded) and does not catch a failed/404 network request either, both of
+which would silently explain this exact hang. Added, right after the
+existing `pageerror` listener:
+- `page.on("console", ...)` — forwards every browser console message.
+- `page.on("requestfailed", ...)` — logs the URL and error text of any
+  request that fails outright (DNS, connection refused, aborted).
+- `page.on("response", ...)` — logs the URL and status of any non-2xx
+  response, which is exactly what a missing/404ing chunk file would produce.
+- `page.evaluateOnNewDocument(...)` installing a page-level
+  `onunhandledrejection` handler that logs `event.reason` — the one failure
+  mode `pageerror` structurally cannot see.
+
+The `onunhandledrejection` handler is assigned via the same
+`globalThis as unknown as {...}` cast idiom already used a few lines below
+for `__archlensRender` (not a plain typed `window.addEventListener(...)`) —
+this file's tsconfig deliberately has no `dom` lib, so a real (not
+stringified) arrow function referencing `window` fails `tsc` here. Caught
+this by actually running `tsc --noEmit` before assuming the first draft was
+fine — it wasn't.
+
+**Verified before committing**, on a fresh clone (this repo's own local
+`node_modules` on Anurag's machine turned out to be in a broken state
+unrelated to any of this — `node_modules/mermaid` had no `package.json` and
+only one file under `dist`; irrelevant to what ships, since Vercel does its
+own clean install from the lockfile at build time, but it meant this
+machine's local `node_modules` couldn't be used to verify anything):
+1. `npm install` clean (511 packages, both `patch-package` patches applied).
+2. `tsc --noEmit` clean.
+3. Full suite: 252/252 passing (needed `PUPPETEER_EXECUTABLE_PATH` pointed at
+   a real local Chromium binary in this sandbox — unrelated to the fix, just
+   this environment having no browser installed by default).
+4. The new diagnostics actually fired during the test run and printed a real
+   404 (the test page's own `favicon.ico`, harmless) via both the `console`
+   and `response` listeners — concrete proof the instrumentation itself
+   works, not just that it compiles.
+5. `git diff --stat -w` on the real repo showed exactly the two intended
+   changes (`backend/lib/mermaid.ts`, +31 lines; new `backend/vercel.json`)
+   before commit.
+
+**Status**: committed on `main` locally, not yet pushed — Anurag runs
+`git push origin main` himself, as always. Once pushed and Vercel redeploys,
+the free-tier render path needs a fourth live test. Two outcomes, both
+useful: a real 200 + `svgUrl` confirms the hypothesis and the free tier is
+finally live; a repeated failure will now also carry real console/response/
+unhandledrejection output in Vercel's logs, which finally gives this
+investigation an actual observation to work from instead of a fourth
+identical guess. Either way, that live test — not this commit — is still the
+actual gate before the free tier can be called working, and before any
+public announcement (Reddit, HN, etc.) makes sense.
