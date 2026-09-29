@@ -3931,3 +3931,59 @@ investigation an actual observation to work from instead of a fourth
 identical guess. Either way, that live test — not this commit — is still the
 actual gate before the free tier can be called working, and before any
 public announcement (Reddit, HN, etc.) makes sense.
+
+## Item 54: item 53's diagnostics worked immediately -- real root cause confirmed (node_modules hoisting), includeFiles glob corrected (2026-09-29)
+
+Pushed item 53, waited for redeploy, ran a fourth live no-Authorization-header
+POST against `/api/generate`. Same 502, same "Waiting failed: 45000ms
+exceeded" -- but this time the new diagnostics actually produced output,
+confirmed via Vercel's Logs page (the request-detail view, reached by
+navigating directly to `logs?selectedLogId=<x-vercel-id suffix>&panelState=
+opened` -- the plain Logs list view is a live tail only and does not show
+historical requests, a UI quirk worth remembering for next time):
+
+```
+404 http://127.0.0.1:<port>/mermaid/mermaid.esm.min.mjs
+404 http://127.0.0.1:<port>/elk/mermaid-layout-elk.esm.min.mjs
+```
+
+Both requestfailed (net::ERR_ABORTED following the 404) and response-not-ok
+fired for both files. This is a stronger, more specific confirmation than
+item 53's hypothesis: it's not an internal chunk 404ing, it's our own local
+bundle server failing to find *the top-level entry files* for both
+packages -- meaning `MERMAID_DIST`/`ELK_DIST` (resolved via
+`require.resolve(...)`) point at directories that don't exist in the
+deployed function at all.
+
+**Why item 53's `vercel.json` fix didn't work**: confirmed via Vercel's
+Build and Deployment settings that Root Directory really is `backend` (so
+`backend/vercel.json` is the right file, that part of item 53 was correct).
+But the `includeFiles` glob (`node_modules/{mermaid,@mermaid-js/layout-elk}/
+dist/**`) resolves relative to Root Directory, i.e. `backend/node_modules/
+...`. This repo is an npm workspaces monorepo (root `package.json` has
+`"workspaces": ["action", "backend"]`), and npm hoists shared dependencies
+with no version conflicts to the *root* `node_modules`, not each workspace's
+own. Confirmed on the real repo: `backend/node_modules/mermaid/dist` does
+not exist; `node_modules/mermaid/dist` (repo root, one level above Root
+Directory) does. The `includeFiles` glob was looking one directory too
+shallow -- it could never have matched anything, hoisted or not.
+
+Also confirmed via the same settings page: "Include files outside the root
+directory in the Build Step" is already **Enabled** on this project (likely
+already relied on for `backend/tsconfig.json`'s `"extends": "../tsconfig.
+base.json"` to work at all) -- so reaching outside Root Directory is already
+an established, working pattern here, not a new risk this fix introduces.
+
+**Fix**: `includeFiles` changed to
+`"{node_modules,../node_modules}/{mermaid,@mermaid-js/layout-elk}/dist/**"`
+-- tries both the unhoisted (`backend/node_modules/...`) and hoisted
+(`../node_modules/...`, i.e. repo-root) locations in one glob, since which
+one actually applies in Vercel's own build container wasn't independently
+re-verified there (only inferred from this machine's local install, which
+should hoist identically given the same lockfile and no version conflicts,
+but "should" isn't "confirmed").
+
+**Status**: committed locally, not yet pushed -- same as always, Anurag
+pushes. Once redeployed, a fifth live test either succeeds (200 + `svgUrl`)
+or -- thanks to item 53's diagnostics actually working now, proven above --
+will say exactly what's still missing instead of another blind guess.

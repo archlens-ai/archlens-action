@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/generate.ts": {
-      "includeFiles": "node_modules/{mermaid,@mermaid-js/layout-elk}/dist/**"
+      "includeFiles": "{node_modules,../node_modules}/{mermaid,@mermaid-js/layout-elk}/dist/**"
     }
   }
 }
