@@ -3987,3 +3987,45 @@ but "should" isn't "confirmed").
 pushes. Once redeployed, a fifth live test either succeeds (200 + `svgUrl`)
 or -- thanks to item 53's diagnostics actually working now, proven above --
 will say exactly what's still missing instead of another blind guess.
+
+## Item 55: free tier confirmed working end-to-end (2026-09-30)
+
+Pushed item 54's includeFiles fix, waited for redeploy, ran a fifth live
+no-Authorization-header POST. Render completed in 8.3s (previously hung the
+full 45s every time) -- confirms item 54's hoisting fix was correct. New
+failure, much simpler: `Failed to store rendered SVG: Bucket not found`.
+
+Root cause, found in `backend/lib/supabase.ts`: uploads go to a Supabase
+Storage bucket named `"diagrams"` that had never actually been created in
+this project -- confirmed via the Supabase dashboard's Storage section
+showing the empty "Create a file bucket" state, no buckets at all. Nothing
+in this codebase or its setup docs had ever created it; item 42 verified the
+Postgres schema against the real project but storage was never covered.
+
+**Fix**: created the `diagrams` bucket directly in the Supabase dashboard,
+set **Public** (required -- `storeSvgInSupabase` calls `getPublicUrl()`,
+which only returns a working, unauthenticated URL for a public bucket; a
+private bucket would need signed URLs instead, a real code change). Asked
+Anurag for explicit confirmation before making it public, since that's a
+real security-relevant choice (anyone with a diagram's URL can read it) --
+he confirmed. Bucket contains only content-addressed rendered-diagram SVGs,
+nothing sensitive.
+
+**Verified live, twice, back to back**:
+1. First request: 200, `svgUrl` returned, fetched that exact URL directly --
+   200, `content-type: image/svg+xml`, 24446 bytes, real `<svg ...>` content,
+   no auth needed.
+2. Second request (different files, a checkout.ts/billing.ts diff): 200 in
+   7.7s, `mermaidSource` correctly reflects the actual call relationship
+   (`checkout() -->|calls| bill()`) -- not just "it returned 200", the
+   content is right.
+
+**Status: the free tier works end-to-end in production**, confirmed by two
+consecutive real, unauthenticated requests producing genuine, publicly-
+fetchable rendered diagrams. This is the live confirmation items 51-54 were
+all gated on. Three separate bugs stacked to cause the original failure:
+item 51 (no Chromium binary), item 52 (timeout too tight, itself not the
+real fix), items 53-54 (missing vercel.json includeFiles for hoisted
+node_modules), and this one (missing storage bucket) -- each only became
+visible once the previous one was actually fixed, which is why this took
+five rounds of real production testing rather than one.
